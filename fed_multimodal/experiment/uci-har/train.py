@@ -36,6 +36,41 @@ def set_seed(seed):
     np.random.seed(seed)
     random.seed(seed)
 
+
+def resolve_device(device_arg):
+    device_arg = str(device_arg).strip().lower()
+
+    if device_arg == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda:0")
+        return torch.device("cpu")
+
+    if device_arg == "cpu":
+        return torch.device("cpu")
+
+    if device_arg == "cuda":
+        device_arg = "cuda:0"
+
+    if device_arg.startswith("cuda:"):
+        if not torch.cuda.is_available():
+            raise ValueError(f"CUDA device '{device_arg}' was requested, but CUDA is not available.")
+
+        try:
+            device_idx = int(device_arg.split(":", 1)[1])
+        except ValueError:
+            raise ValueError(f"Invalid CUDA device '{device_arg}'. Expected format: cuda:N, e.g. cuda:0.")
+
+        device_count = torch.cuda.device_count()
+        if device_idx < 0 or device_idx >= device_count:
+            raise ValueError(
+                f"CUDA device '{device_arg}' is unavailable. "
+                f"Detected {device_count} CUDA device(s); valid ids are 0 to {device_count - 1}."
+            )
+        return torch.device(device_arg)
+
+    raise ValueError("Invalid --device value. Use one of: auto, cpu, cuda, cuda:N.")
+
+
 def parse_args():
     # read path config files
     path_conf = dict()
@@ -56,6 +91,13 @@ def parse_args():
         default=path_conf["output_dir"],
         type=str, 
         help='output feature directory'
+    )
+
+    parser.add_argument(
+        '--device',
+        default='auto',
+        type=str,
+        help='device to use: auto, cpu, cuda, or cuda:N',
     )
     
     parser.add_argument(
@@ -265,8 +307,9 @@ if __name__ == '__main__':
     dm.get_simulation_setting(alpha=args.alpha)
     
     # find device
-    device = torch.device("cuda:1") if torch.cuda.is_available() else "cpu"
-    if torch.cuda.is_available(): print('GPU available, use GPU')
+    device = resolve_device(args.device)
+    logging.info(f'Using device: {device}')
+    if device.type == 'cuda': logging.info(f'GPU available, use GPU: {torch.cuda.get_device_name(device.index)}')
     save_result_dict = dict()
 
     if args.fed_alg in ['fed_avg', 'fed_prox', 'fed_opt']:
