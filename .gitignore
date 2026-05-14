@@ -130,3 +130,15 @@ dmypy.json
 
 *log*
 result/*
+
+# Local datasets, generated features, experiment outputs
+fed_multimodal/data/uci-har/
+fed_multimodal/output/
+fed_multimodal/result/
+fed_multimodal/runs/
+fed_multimodal/**/model.pt
+fed_multimodal/**/raw_log/
+fed_multimodal/**/*.tfevents.*
+fed_multimodal/**/*.ckpt
+fed_multimodal/**/*.pth
+fed_multimodal/**/*.pt
