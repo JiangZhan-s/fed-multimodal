@@ -19,6 +19,10 @@ from fed_multimodal.dataloader.dataload_manager import DataloadManager
 from fed_multimodal.trainers.fed_rs_trainer import ClientFedRS
 from fed_multimodal.trainers.fed_avg_trainer import ClientFedAvg
 from fed_multimodal.trainers.scaffold_trainer import ClientScaffold
+from fed_multimodal.trainers.client_metrics import (
+    append_client_metrics,
+    build_client_metrics_row,
+)
 
 # Define logging console
 import logging
@@ -116,6 +120,19 @@ def parse_args():
         default=None,
         type=parse_fold,
         help='optional fold index to run; defaults to all folds 1-5',
+    )
+
+    parser.add_argument(
+        '--save_client_metrics',
+        action='store_true',
+        help='save per-client train-time metrics to CSV',
+    )
+
+    parser.add_argument(
+        '--client_metrics_dir',
+        default=None,
+        type=str,
+        help='optional directory for client_metrics.csv',
     )
     
     parser.add_argument(
@@ -417,6 +434,12 @@ if __name__ == '__main__':
             server.model_setting_str
         )
         Path.mkdir(save_json_path, parents=True, exist_ok=True)
+        if args.client_metrics_dir is None:
+            client_metrics_path = save_json_path.joinpath("client_metrics.csv")
+        else:
+            client_metrics_path = Path(args.client_metrics_dir).joinpath("client_metrics.csv")
+        if args.save_client_metrics:
+            logging.info(f'Saving client-level metrics to {client_metrics_path}')
 
         server.save_json_file(
             dm.label_dist_dict, 
@@ -472,6 +495,18 @@ if __name__ == '__main__':
                         copy.deepcopy(client.get_parameters()), 
                         client.result['sample'], 
                         client.result
+                    )
+                if args.save_client_metrics:
+                    append_client_metrics(
+                        client_metrics_path,
+                        build_client_metrics_row(
+                            args=args,
+                            fold_idx=fold_idx,
+                            epoch=epoch,
+                            client_id=client_id,
+                            client_result=client.result,
+                            modality_setting=server.feature,
+                        )
                     )
                 del client
             
