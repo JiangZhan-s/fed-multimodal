@@ -14,10 +14,12 @@ from pathlib import Path
 from fed_multimodal.constants import constants
 from fed_multimodal.trainers.server_trainer import Server
 from fed_multimodal.model.mm_models import HARClassifier
+from fed_multimodal.model.unimodal_models import ConvRNNClassifier
 from fed_multimodal.dataloader.dataload_manager import DataloadManager
 from fed_multimodal.dataloader.local_eval_split import (
     save_local_eval_split_json,
     split_multimodal_client_records,
+    split_unimodal_client_records,
 )
 
 from fed_multimodal.trainers.fed_rs_trainer import ClientFedRS
@@ -112,6 +114,26 @@ def subset_sim_dict(client_sim_dict, indices):
     if client_sim_dict is None:
         return None
     return [copy.deepcopy(client_sim_dict[idx]) for idx in indices]
+
+
+def normalize_modality(modality):
+    if modality == "acc_gyro":
+        return "multimodal"
+    return modality
+
+
+def validate_modality_args(args):
+    if args.modality == "multimodal":
+        logging.warning("--modality multimodal is deprecated; use --modality acc_gyro.")
+        args.modality = "acc_gyro"
+
+    if args.modality in ["acc", "gyro"]:
+        if args.att and args.att_name != "base":
+            raise ValueError("Only --att_name base is supported for acc/gyro single-modality training.")
+        if args.missing_modality:
+            raise ValueError(
+                "Missing-modality simulation is not supported for pure acc/gyro single-modality training."
+            )
 
 
 def parse_args():
@@ -414,7 +436,8 @@ def parse_args():
     parser.add_argument(
         '--modality', 
         type=str, 
-        default='multimodal',
+        default='acc_gyro',
+        choices=['acc_gyro', 'acc', 'gyro', 'multimodal'],
         help='modality type'
     )
     args = parser.parse_args()
@@ -424,6 +447,8 @@ if __name__ == '__main__':
 
     # argument parser
     args = parse_args()
+    validate_modality_args(args)
+    args.modality = normalize_modality(args.modality)
     if args.per_client_eval_data == "local_eval" and not args.enable_local_eval_split:
         raise ValueError("--per_client_eval_data local_eval requires --enable_local_eval_split.")
 
@@ -456,20 +481,40 @@ if __name__ == '__main__':
     # load feature records
     acc_record_dict = dict()
     gyro_record_dict = dict()
+    unimodal_record_dict = dict()
     logging.info('Reading Data')
     for client_id in tqdm(dm.client_ids):
-        acc_dict = dm.load_acc_feat(
-            client_id=client_id
-        )
-        gyro_dict = dm.load_gyro_feat(
-            client_id=client_id
-        )
-        dm.get_label_dist(
-            gyro_dict, 
-            client_id
-        )
-        acc_record_dict[client_id] = acc_dict
-        gyro_record_dict[client_id] = gyro_dict
+        if args.modality == "multimodal":
+            acc_dict = dm.load_acc_feat(
+                client_id=client_id
+            )
+            gyro_dict = dm.load_gyro_feat(
+                client_id=client_id
+            )
+            dm.get_label_dist(
+                gyro_dict, 
+                client_id
+            )
+            acc_record_dict[client_id] = acc_dict
+            gyro_record_dict[client_id] = gyro_dict
+        elif args.modality == "acc":
+            data_dict = dm.load_acc_feat(
+                client_id=client_id
+            )
+            dm.get_label_dist(
+                data_dict,
+                client_id
+            )
+            unimodal_record_dict[client_id] = data_dict
+        elif args.modality == "gyro":
+            data_dict = dm.load_gyro_feat(
+                client_id=client_id
+            )
+            dm.get_label_dist(
+                data_dict,
+                client_id
+            )
+            unimodal_record_dict[client_id] = data_dict
     
     # We perform 5 fold experiments with 5 seeds by default.
     for fold_idx in fold_indices:
@@ -482,14 +527,23 @@ if __name__ == '__main__':
         # loss function
         criterion = nn.NLLLoss().to(device)
         # Define the model
-        global_model = HARClassifier(
-            num_classes=constants.num_class_dict[args.dataset],         # Number of classes 
-            acc_input_dim=constants.feature_len_dict[args.acc_feat],    # Acc data input dim
-            gyro_input_dim=constants.feature_len_dict[args.gyro_feat],  # Gyro data input dim
-            en_att=args.att,                                            # Enable self attention or not
-            d_hid=args.hid_size,
-            att_name=args.att_name
-        )
+        if args.modality == "multimodal":
+            global_model = HARClassifier(
+                num_classes=constants.num_class_dict[args.dataset],         # Number of classes
+                acc_input_dim=constants.feature_len_dict[args.acc_feat],    # Acc data input dim
+                gyro_input_dim=constants.feature_len_dict[args.gyro_feat],  # Gyro data input dim
+                en_att=args.att,                                            # Enable self attention or not
+                d_hid=args.hid_size,
+                att_name=args.att_name
+            )
+        else:
+            global_model = ConvRNNClassifier(
+                num_classes=constants.num_class_dict[args.dataset],
+                input_dim=constants.feature_len_dict[args.modality],
+                d_hid=args.hid_size,
+                en_att=args.att,
+                att_name=args.att_name
+            )
         global_model = global_model.to(device)
 
         # initialize server
@@ -541,65 +595,99 @@ if __name__ == '__main__':
         local_eval_split_info = dict()
         local_eval_split_seed = args.local_eval_seed + 8 * fold_idx
         for client_id in dm.client_ids:
-            acc_records = acc_record_dict[client_id]
-            gyro_records = gyro_record_dict[client_id]
             shuffle = False if client_id in ['dev', 'test'] else True
             client_sim_dict = None if client_id in ['dev', 'test'] else dm.get_client_sim_dict(client_id=client_id)
 
-            if args.enable_local_eval_split and client_id not in ['dev', 'test']:
-                (
-                    acc_train,
-                    gyro_train,
-                    acc_eval,
-                    gyro_eval,
-                    split_info,
-                ) = split_multimodal_client_records(
-                    acc_records,
-                    gyro_records,
-                    eval_ratio=args.local_eval_ratio,
-                    seed=local_eval_split_seed,
-                    min_eval_samples=args.local_eval_min_samples,
-                    client_id=client_id,
-                )
-                local_eval_split_info[client_id] = split_info
-                train_sim_dict = subset_sim_dict(client_sim_dict, split_info["train_indices"])
-                eval_sim_dict = subset_sim_dict(client_sim_dict, split_info["eval_indices"])
-                dm.get_label_dist(
-                    gyro_train,
-                    client_id
-                )
-                dataloader_dict[client_id] = dm.set_dataloader(
-                    acc_train,
-                    gyro_train,
-                    shuffle=shuffle,
-                    client_sim_dict=train_sim_dict,
-                    default_feat_shape_a=np.array([128, constants.feature_len_dict[args.acc_feat]]),
-                    default_feat_shape_b=np.array([128, constants.feature_len_dict[args.gyro_feat]]),
-                )
-                if len(acc_eval) == 0:
-                    local_eval_dataloader_dict[client_id] = None
-                else:
-                    local_eval_dataloader_dict[client_id] = dm.set_dataloader(
+            if args.modality == "multimodal":
+                acc_records = acc_record_dict[client_id]
+                gyro_records = gyro_record_dict[client_id]
+
+                if args.enable_local_eval_split and client_id not in ['dev', 'test']:
+                    (
+                        acc_train,
+                        gyro_train,
                         acc_eval,
                         gyro_eval,
-                        shuffle=False,
-                        client_sim_dict=eval_sim_dict,
+                        split_info,
+                    ) = split_multimodal_client_records(
+                        acc_records,
+                        gyro_records,
+                        eval_ratio=args.local_eval_ratio,
+                        seed=local_eval_split_seed,
+                        min_eval_samples=args.local_eval_min_samples,
+                        client_id=client_id,
+                    )
+                    local_eval_split_info[client_id] = split_info
+                    train_sim_dict = subset_sim_dict(client_sim_dict, split_info["train_indices"])
+                    eval_sim_dict = subset_sim_dict(client_sim_dict, split_info["eval_indices"])
+                    dm.get_label_dist(
+                        gyro_train,
+                        client_id
+                    )
+                    dataloader_dict[client_id] = dm.set_dataloader(
+                        acc_train,
+                        gyro_train,
+                        shuffle=shuffle,
+                        client_sim_dict=train_sim_dict,
+                        default_feat_shape_a=np.array([128, constants.feature_len_dict[args.acc_feat]]),
+                        default_feat_shape_b=np.array([128, constants.feature_len_dict[args.gyro_feat]]),
+                    )
+                    if len(acc_eval) == 0:
+                        local_eval_dataloader_dict[client_id] = None
+                    else:
+                        local_eval_dataloader_dict[client_id] = dm.set_dataloader(
+                            acc_eval,
+                            gyro_eval,
+                            shuffle=False,
+                            client_sim_dict=eval_sim_dict,
+                            default_feat_shape_a=np.array([128, constants.feature_len_dict[args.acc_feat]]),
+                            default_feat_shape_b=np.array([128, constants.feature_len_dict[args.gyro_feat]]),
+                        )
+                else:
+                    dataloader_dict[client_id] = dm.set_dataloader(
+                        acc_records,
+                        gyro_records,
+                        shuffle=shuffle,
+                        client_sim_dict=client_sim_dict,
                         default_feat_shape_a=np.array([128, constants.feature_len_dict[args.acc_feat]]),
                         default_feat_shape_b=np.array([128, constants.feature_len_dict[args.gyro_feat]]),
                     )
             else:
-                dataloader_dict[client_id] = dm.set_dataloader(
-                    acc_records,
-                    gyro_records,
-                    shuffle=shuffle,
-                    client_sim_dict=client_sim_dict,
-                    default_feat_shape_a=np.array([128, constants.feature_len_dict[args.acc_feat]]),
-                    default_feat_shape_b=np.array([128, constants.feature_len_dict[args.gyro_feat]]),
-                )
+                records = unimodal_record_dict[client_id]
+                if args.enable_local_eval_split and client_id not in ['dev', 'test']:
+                    train_records, eval_records, split_info = split_unimodal_client_records(
+                        records,
+                        eval_ratio=args.local_eval_ratio,
+                        seed=local_eval_split_seed,
+                        min_eval_samples=args.local_eval_min_samples,
+                        client_id=client_id,
+                    )
+                    local_eval_split_info[client_id] = split_info
+                    dm.get_label_dist(
+                        train_records,
+                        client_id
+                    )
+                    dataloader_dict[client_id] = dm.set_unimodal_dataloader(
+                        train_records,
+                        shuffle=shuffle,
+                    )
+                    if len(eval_records) == 0:
+                        local_eval_dataloader_dict[client_id] = None
+                    else:
+                        local_eval_dataloader_dict[client_id] = dm.set_unimodal_dataloader(
+                            eval_records,
+                            shuffle=False,
+                        )
+                else:
+                    dataloader_dict[client_id] = dm.set_unimodal_dataloader(
+                        records,
+                        shuffle=shuffle,
+                    )
 
         if args.enable_local_eval_split:
             split_json_dict = {
                 "dataset": args.dataset,
+                "modality": server.feature,
                 "alpha": args.alpha,
                 "fold": fold_idx,
                 "local_eval_ratio": args.local_eval_ratio,

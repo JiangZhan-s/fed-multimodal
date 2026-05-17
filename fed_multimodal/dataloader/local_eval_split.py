@@ -121,6 +121,76 @@ def split_multimodal_client_records(
     )
 
 
+def split_unimodal_client_records(
+    records,
+    eval_ratio,
+    seed,
+    min_eval_samples,
+    client_id,
+):
+    if len(records) == 0:
+        split_info = {
+            "client_id": client_id,
+            "num_samples": 0,
+            "train_indices": [],
+            "eval_indices": [],
+            "local_train_samples": 0,
+            "local_eval_samples": 0,
+            "split_method": "skipped",
+            "warning": "no samples to split",
+            "label_counts": {},
+        }
+        return [], [], split_info
+
+    num_samples = len(records)
+    warning = ""
+    split_method = "stratified"
+
+    if num_samples <= 1:
+        train_indices = list(range(num_samples))
+        eval_indices = list()
+        split_method = "skipped"
+        warning = "not enough samples to create a local eval split"
+    else:
+        num_eval = int(round(num_samples * eval_ratio))
+        num_eval = max(min_eval_samples, num_eval)
+        num_eval = min(num_eval, num_samples - 1)
+
+        if num_eval <= 0:
+            train_indices = list(range(num_samples))
+            eval_indices = list()
+            split_method = "skipped"
+            warning = "computed local eval size is zero"
+        else:
+            labels = maybe_get_labels(records)
+            rng = np.random.default_rng(seed)
+            try:
+                train_indices, eval_indices = _stratified_split_indices(labels, num_eval, rng)
+            except ValueError as exc:
+                split_method = "random"
+                warning = f"stratified split failed: {exc}; used random split"
+                logging.warning(f"Client {client_id}: {warning}")
+                train_indices, eval_indices = _random_split_indices(num_samples, num_eval, rng)
+
+    split_info = {
+        "client_id": client_id,
+        "num_samples": num_samples,
+        "train_indices": train_indices,
+        "eval_indices": eval_indices,
+        "local_train_samples": len(train_indices),
+        "local_eval_samples": len(eval_indices),
+        "split_method": split_method,
+        "warning": warning,
+        "label_counts": dict(Counter(maybe_get_labels(records))),
+    }
+
+    return (
+        _subset_records(records, train_indices),
+        _subset_records(records, eval_indices),
+        split_info,
+    )
+
+
 def save_local_eval_split_json(split_info_dict, output_path):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
