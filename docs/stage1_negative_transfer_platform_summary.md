@@ -268,6 +268,8 @@ PYTHONPATH=/home/wuyi/FedMultimodal/fed-multimodal conda run -n zwy1 python scri
 
 2 阶段将进入 FedRANT-Lite 设计。
 
+Stage 2 first formal diagnosis result is recorded in `docs/diagnosis_alpha01_fold1_ep50.md`.
+
 2 阶段建议目标：
 
 - 先用现有平台做正式诊断实验，确认负迁移现象。
