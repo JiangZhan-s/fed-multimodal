@@ -26,6 +26,63 @@ REQUIRED_COLUMNS = {
 ALIGN_KEYS = ["dataset", "fold", "client_id", "eval_data_type"]
 
 
+def _is_missing(value):
+    return pd.isna(value) or str(value).strip() == ""
+
+
+def normalize_int_like(value, field_name="value"):
+    """Normalize int-like values from CSV, accepting forms like 1, 1.0, or fold1."""
+    if _is_missing(value):
+        return np.nan
+
+    text = str(value).strip()
+    if field_name == "fold" and text.lower().startswith("fold"):
+        text = text[4:]
+
+    try:
+        numeric = float(text)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be int-like, got {value!r}") from exc
+
+    rounded = int(round(numeric))
+    if not math.isclose(numeric, rounded, rel_tol=0.0, abs_tol=1e-8):
+        raise ValueError(f"{field_name} must be int-like, got {value!r}")
+    return rounded
+
+
+def normalize_float_like(value):
+    """Normalize float-like values from CSV while preserving missing values."""
+    if _is_missing(value):
+        return np.nan
+    return float(str(value).strip())
+
+
+def values_equal_numeric(a, b, tol=1e-8):
+    """Return True when two CSV values are numerically equivalent."""
+    if _is_missing(a) and _is_missing(b):
+        return True
+    if _is_missing(a) or _is_missing(b):
+        return False
+    return math.isclose(float(a), float(b), rel_tol=0.0, abs_tol=tol)
+
+
+def normalize_split_check_fields(df):
+    """Normalize split metadata used for strict consistency checks."""
+    df = df.copy()
+    for col in df.columns:
+        if col == "fold":
+            df[col] = df[col].apply(lambda value: str(normalize_int_like(value, "fold")))
+        elif col.endswith("local_eval_seed") or "local_eval_seed_" in col:
+            df[col] = df[col].apply(lambda value: normalize_int_like(value, "local_eval_seed"))
+        elif col.endswith("local_eval_samples") or "local_eval_samples_" in col:
+            df[col] = df[col].apply(lambda value: normalize_int_like(value, "local_eval_samples"))
+        elif col.endswith("local_eval_ratio") or "local_eval_ratio_" in col:
+            df[col] = df[col].apply(normalize_float_like)
+        elif col.endswith("missing_modailty_rate") or "missing_modailty_rate_" in col:
+            df[col] = df[col].apply(normalize_float_like)
+    return df
+
+
 def load_per_client_eval_csv(path, eval_data_type="local_eval_split", metric="eval_f1"):
     """Load a per-client eval CSV and filter it to one evaluation data type."""
     path = Path(path)
@@ -56,7 +113,7 @@ def load_per_client_eval_csv(path, eval_data_type="local_eval_split", metric="ev
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df["fold"] = df["fold"].astype(str)
+    df["fold"] = df["fold"].apply(lambda value: str(normalize_int_like(value, "fold")))
     df["client_id"] = df["client_id"].astype(str)
 
     duplicate_mask = df.duplicated(ALIGN_KEYS, keep=False)
@@ -97,14 +154,15 @@ def _summarize_missing(name, missing_keys, limit=10):
 
 
 def _check_split_consistency(merged_df):
+    merged_df = normalize_split_check_fields(merged_df)
     comparable_fields = ["local_eval_seed", "local_eval_ratio", "local_eval_samples"]
     for field in comparable_fields:
         multi_col = f"{field}_multi"
         a_col = f"{field}_single_a"
         b_col = f"{field}_single_b"
-        mismatch = (
-            (merged_df[multi_col].astype(str) != merged_df[a_col].astype(str))
-            | (merged_df[multi_col].astype(str) != merged_df[b_col].astype(str))
+        mismatch = ~(
+            merged_df.apply(lambda row: values_equal_numeric(row[multi_col], row[a_col]), axis=1)
+            & merged_df.apply(lambda row: values_equal_numeric(row[multi_col], row[b_col]), axis=1)
         )
         if mismatch.any():
             examples = merged_df.loc[mismatch, ALIGN_KEYS + [multi_col, a_col, b_col]].head(10)
