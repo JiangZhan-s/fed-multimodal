@@ -23,6 +23,10 @@ from fed_multimodal.trainers.client_metrics import (
     append_client_metrics,
     build_client_metrics_row,
 )
+from fed_multimodal.trainers.per_client_eval_metrics import (
+    build_per_client_eval_row,
+    write_per_client_eval_rows,
+)
 
 # Define logging console
 import logging
@@ -133,6 +137,33 @@ def parse_args():
         default=None,
         type=str,
         help='optional directory for client_metrics.csv',
+    )
+
+    parser.add_argument(
+        '--save_per_client_eval',
+        action='store_true',
+        help='save per-client final evaluation metrics to CSV',
+    )
+
+    parser.add_argument(
+        '--per_client_eval_stage',
+        default='final',
+        choices=['final'],
+        help='when to run per-client evaluation; currently only final is supported',
+    )
+
+    parser.add_argument(
+        '--per_client_eval_dir',
+        default=None,
+        type=str,
+        help='optional directory for per_client_eval_metrics.csv',
+    )
+
+    parser.add_argument(
+        '--per_client_eval_data',
+        default='local_train',
+        choices=['local_train'],
+        help='which client data to evaluate; currently only local_train is supported',
     )
     
     parser.add_argument(
@@ -440,6 +471,12 @@ if __name__ == '__main__':
             client_metrics_path = Path(args.client_metrics_dir).joinpath("client_metrics.csv")
         if args.save_client_metrics:
             logging.info(f'Saving client-level metrics to {client_metrics_path}')
+        if args.per_client_eval_dir is None:
+            per_client_eval_metrics_path = save_json_path.joinpath("per_client_eval_metrics.csv")
+        else:
+            per_client_eval_metrics_path = Path(args.per_client_eval_dir).joinpath("per_client_eval_metrics.csv")
+        if args.save_per_client_eval:
+            logging.info(f'Saving per-client evaluation metrics to {per_client_eval_metrics_path}')
 
         server.save_json_file(
             dm.label_dist_dict, 
@@ -551,6 +588,38 @@ if __name__ == '__main__':
             save_result_dict, 
             save_json_path.joinpath('result.json')
         )
+
+        if args.save_per_client_eval:
+            per_client_eval_rows = list()
+            final_epoch = int(args.num_epochs) - 1
+            with torch.no_grad():
+                for client_id in client_ids:
+                    dataloader = dataloader_dict.get(client_id)
+                    if dataloader is None:
+                        logging.warning(f'Skip per-client eval for {client_id}: dataloader is None')
+                        continue
+
+                    server.inference(dataloader)
+                    per_client_eval_rows.append(
+                        build_per_client_eval_row(
+                            args=args,
+                            fold_idx=fold_idx,
+                            epoch=final_epoch,
+                            eval_stage=args.per_client_eval_stage,
+                            client_id=client_id,
+                            eval_result=copy.deepcopy(server.result),
+                            modality_setting=server.feature,
+                            eval_data_type='local_train_eval',
+                        )
+                    )
+            write_per_client_eval_rows(
+                per_client_eval_metrics_path,
+                per_client_eval_rows,
+            )
+            logging.info(
+                f'Saved {len(per_client_eval_rows)} per-client evaluation rows to '
+                f'{per_client_eval_metrics_path}'
+            )
 
     # Calculate the average of the 5-fold experiments
     save_result_dict['average'] = dict()
