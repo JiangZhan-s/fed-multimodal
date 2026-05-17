@@ -350,15 +350,38 @@ def compute_fold_summary(client_df, eps=1.0, worst_ratio=0.2):
     return summary
 
 
-def write_diagnosis_outputs(client_df, summary_df, output_dir, write_json_summary=False):
+def write_diagnosis_outputs(
+    client_df,
+    summary_df,
+    output_dir,
+    write_json_summary=False,
+    overwrite=False,
+    config=None,
+):
     """Write client-level and summary diagnosis outputs."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     client_path = output_dir.joinpath("client_level_negative_transfer.csv")
     summary_path = output_dir.joinpath("diagnosis_summary.csv")
+    config_path = output_dir.joinpath("diagnosis_config.json")
+    output_paths = [client_path, summary_path, config_path]
+    if write_json_summary:
+        output_paths.append(output_dir.joinpath("diagnosis_summary.json"))
+
+    existing_paths = [path for path in output_paths if path.exists()]
+    if existing_paths and not overwrite:
+        existing = ", ".join(str(path) for path in existing_paths)
+        raise FileExistsError(
+            f"Diagnosis output file(s) already exist: {existing}. "
+            "Use --overwrite to replace them."
+        )
+
     client_df.to_csv(client_path, index=False)
     summary_df.to_csv(summary_path, index=False)
+
+    with open(str(config_path), "w") as f:
+        json.dump(config or {}, f, indent=4)
 
     json_path = None
     if write_json_summary:
@@ -374,5 +397,6 @@ def write_diagnosis_outputs(client_df, summary_df, output_dir, write_json_summar
     return {
         "client_csv": client_path,
         "summary_csv": summary_path,
+        "config_json": config_path,
         "summary_json": json_path,
     }

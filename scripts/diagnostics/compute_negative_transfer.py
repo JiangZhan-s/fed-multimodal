@@ -51,6 +51,11 @@ def parse_args():
         action="store_true",
         help="Also write diagnosis_summary.json",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing diagnosis output files",
+    )
     return parser.parse_args()
 
 
@@ -89,11 +94,29 @@ def main():
         single_b_name=args.single_b_name,
     )
     summary_df = compute_fold_summary(client_df, eps=args.eps, worst_ratio=args.worst_ratio)
+    diagnosis_config = {
+        "multi_csv": str(Path(args.multi_csv)),
+        "single_a_csv": str(Path(args.single_a_csv)),
+        "single_b_csv": str(Path(args.single_b_csv)),
+        "single_a_name": args.single_a_name,
+        "single_b_name": args.single_b_name,
+        "eval_data_type": args.eval_data_type,
+        "metric": args.metric,
+        "eps": args.eps,
+        "min_eval_samples": args.min_eval_samples,
+        "worst_ratio": args.worst_ratio,
+        "strict_split_check": args.strict_split_check,
+        "allow_missing_clients": args.allow_missing_clients,
+        "output_dir": str(Path(args.output_dir)),
+    }
+
     paths = write_diagnosis_outputs(
         client_df,
         summary_df,
         args.output_dir,
         write_json_summary=args.write_json_summary,
+        overwrite=args.overwrite,
+        config=diagnosis_config,
     )
 
     average = summary_df[summary_df["fold"].astype(str) == "average"]
@@ -106,6 +129,7 @@ def main():
     print(f"{worst_col}: {report_row[worst_col]:.6f}")
     print(f"client output: {paths['client_csv']}")
     print(f"summary output: {paths['summary_csv']}")
+    print(f"config output: {paths['config_json']}")
     if paths["summary_json"] is not None:
         print(f"json output: {paths['summary_json']}")
 

@@ -2,6 +2,9 @@ import csv
 from pathlib import Path
 
 
+_PREPARED_CSV_PATHS = set()
+
+
 CLIENT_METRICS_FIELDS = [
     "dataset",
     "fed_alg",
@@ -23,6 +26,24 @@ CLIENT_METRICS_FIELDS = [
     "train_uar",
     "train_top5_acc",
 ]
+
+
+def _prepare_csv_path(csv_path, write_mode):
+    if write_mode not in ["append", "overwrite", "error_if_exists"]:
+        raise ValueError("write_mode must be one of: append, overwrite, error_if_exists")
+
+    csv_path = Path(csv_path)
+    prepared_key = str(csv_path.resolve())
+    if prepared_key in _PREPARED_CSV_PATHS:
+        return csv_path
+
+    if write_mode == "error_if_exists" and csv_path.exists():
+        raise FileExistsError(f"Client metrics CSV already exists: {csv_path}")
+    if write_mode == "overwrite" and csv_path.exists():
+        csv_path.unlink()
+
+    _PREPARED_CSV_PATHS.add(prepared_key)
+    return csv_path
 
 
 def build_client_metrics_row(
@@ -56,8 +77,8 @@ def build_client_metrics_row(
     }
 
 
-def append_client_metrics(csv_path, row):
-    csv_path = Path(csv_path)
+def append_client_metrics(csv_path, row, write_mode="append"):
+    csv_path = _prepare_csv_path(csv_path, write_mode)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not csv_path.exists() or csv_path.stat().st_size == 0
 

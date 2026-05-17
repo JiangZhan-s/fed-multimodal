@@ -110,6 +110,38 @@ def parse_positive_int(value_arg):
     return value
 
 
+def validate_run_id(run_id):
+    if run_id is None:
+        return None
+
+    run_id = str(run_id).strip()
+    if run_id == "":
+        raise argparse.ArgumentTypeError("run_id must not be empty or blank.")
+    if "/" in run_id or "\\" in run_id or ".." in run_id:
+        raise argparse.ArgumentTypeError("run_id must not contain '/', '\\', or '..'.")
+    allowed_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.")
+    invalid_chars = sorted(set(run_id) - allowed_chars)
+    if invalid_chars:
+        raise argparse.ArgumentTypeError(
+            f"run_id contains unsupported character(s): {''.join(invalid_chars)}"
+        )
+    return run_id
+
+
+def prepare_metric_output_path(csv_path, write_mode, prepared_paths):
+    csv_path = Path(csv_path)
+    prepared_key = str(csv_path.resolve())
+    if prepared_key in prepared_paths:
+        return
+
+    if write_mode == "error_if_exists" and csv_path.exists():
+        raise FileExistsError(f"Metrics CSV already exists: {csv_path}")
+    if write_mode == "overwrite" and csv_path.exists():
+        csv_path.unlink()
+
+    prepared_paths.add(prepared_key)
+
+
 def subset_sim_dict(client_sim_dict, indices):
     if client_sim_dict is None:
         return None
@@ -243,6 +275,20 @@ def parse_args():
         '--save_local_eval_split',
         action='store_true',
         help='save local eval split metadata; always saved when local eval split is enabled',
+    )
+
+    parser.add_argument(
+        '--run_id',
+        default=None,
+        type=validate_run_id,
+        help='optional run identifier; outputs are saved under runs/{run_id}',
+    )
+
+    parser.add_argument(
+        '--metrics_write_mode',
+        default='append',
+        choices=['append', 'overwrite', 'error_if_exists'],
+        help='write mode for client metrics CSV files',
     )
     
     parser.add_argument(
@@ -466,6 +512,7 @@ if __name__ == '__main__':
         logging.info('Running all folds: fold1-fold5')
     else:
         logging.info(f'Running fold{args.fold}')
+    prepared_metric_paths = set()
 
     if args.fed_alg in ['fed_avg', 'fed_prox', 'fed_opt']:
         Client = ClientFedAvg
@@ -570,6 +617,8 @@ if __name__ == '__main__':
             server.att,
             server.model_setting_str
         )
+        if args.run_id is not None:
+            save_json_path = save_json_path.joinpath("runs", args.run_id)
         Path.mkdir(save_json_path, parents=True, exist_ok=True)
         if args.client_metrics_dir is None:
             client_metrics_path = save_json_path.joinpath("client_metrics.csv")
@@ -583,7 +632,20 @@ if __name__ == '__main__':
             per_client_eval_metrics_path = Path(args.per_client_eval_dir).joinpath("per_client_eval_metrics.csv")
         if args.save_per_client_eval:
             logging.info(f'Saving per-client evaluation metrics to {per_client_eval_metrics_path}')
-        local_eval_split_path = save_json_path.joinpath("local_eval_split.json")
+        local_eval_split_path = save_json_path.joinpath(f"local_eval_split_fold{fold_idx}.json")
+
+        if args.save_client_metrics:
+            prepare_metric_output_path(
+                client_metrics_path,
+                args.metrics_write_mode,
+                prepared_metric_paths,
+            )
+        if args.save_per_client_eval:
+            prepare_metric_output_path(
+                per_client_eval_metrics_path,
+                args.metrics_write_mode,
+                prepared_metric_paths,
+            )
 
         server.save_json_file(
             dm.label_dist_dict, 
@@ -759,7 +821,8 @@ if __name__ == '__main__':
                             client_id=client_id,
                             client_result=client.result,
                             modality_setting=server.feature,
-                        )
+                        ),
+                        write_mode=args.metrics_write_mode,
                     )
                 del client
             
@@ -842,6 +905,7 @@ if __name__ == '__main__':
             write_per_client_eval_rows(
                 per_client_eval_metrics_path,
                 per_client_eval_rows,
+                write_mode=args.metrics_write_mode,
             )
             logging.info(
                 f'Saved {len(per_client_eval_rows)} per-client evaluation rows to '
