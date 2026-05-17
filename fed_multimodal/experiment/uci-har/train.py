@@ -15,6 +15,10 @@ from fed_multimodal.constants import constants
 from fed_multimodal.trainers.server_trainer import Server
 from fed_multimodal.model.mm_models import HARClassifier
 from fed_multimodal.dataloader.dataload_manager import DataloadManager
+from fed_multimodal.dataloader.local_eval_split import (
+    save_local_eval_split_json,
+    split_multimodal_client_records,
+)
 
 from fed_multimodal.trainers.fed_rs_trainer import ClientFedRS
 from fed_multimodal.trainers.fed_avg_trainer import ClientFedAvg
@@ -90,6 +94,26 @@ def parse_fold(fold_arg):
     return fold_idx
 
 
+def parse_local_eval_ratio(ratio_arg):
+    ratio = float(ratio_arg)
+    if ratio <= 0 or ratio >= 1:
+        raise argparse.ArgumentTypeError("local_eval_ratio must satisfy 0 < ratio < 1.")
+    return ratio
+
+
+def parse_positive_int(value_arg):
+    value = int(value_arg)
+    if value < 1:
+        raise argparse.ArgumentTypeError("value must be a positive integer.")
+    return value
+
+
+def subset_sim_dict(client_sim_dict, indices):
+    if client_sim_dict is None:
+        return None
+    return [copy.deepcopy(client_sim_dict[idx]) for idx in indices]
+
+
 def parse_args():
     # read path config files
     path_conf = dict()
@@ -162,8 +186,41 @@ def parse_args():
     parser.add_argument(
         '--per_client_eval_data',
         default='local_train',
-        choices=['local_train'],
-        help='which client data to evaluate; currently only local_train is supported',
+        choices=['local_train', 'local_eval'],
+        help='which client data to evaluate',
+    )
+
+    parser.add_argument(
+        '--enable_local_eval_split',
+        action='store_true',
+        help='split each client into local_train/local_eval records',
+    )
+
+    parser.add_argument(
+        '--local_eval_ratio',
+        default=0.2,
+        type=parse_local_eval_ratio,
+        help='ratio of each client held out for local evaluation',
+    )
+
+    parser.add_argument(
+        '--local_eval_seed',
+        default=2026,
+        type=int,
+        help='base random seed for local evaluation split',
+    )
+
+    parser.add_argument(
+        '--local_eval_min_samples',
+        default=1,
+        type=parse_positive_int,
+        help='minimum local eval samples for each splittable client',
+    )
+
+    parser.add_argument(
+        '--save_local_eval_split',
+        action='store_true',
+        help='save local eval split metadata; always saved when local eval split is enabled',
     )
     
     parser.add_argument(
@@ -367,6 +424,8 @@ if __name__ == '__main__':
 
     # argument parser
     args = parse_args()
+    if args.per_client_eval_data == "local_eval" and not args.enable_local_eval_split:
+        raise ValueError("--per_client_eval_data local_eval requires --enable_local_eval_split.")
 
     # data manager
     dm = DataloadManager(args)
@@ -394,8 +453,9 @@ if __name__ == '__main__':
     dm.load_sim_dict()
     # load client ids
     dm.get_client_ids()
-    # set dataloaders
-    dataloader_dict = dict()
+    # load feature records
+    acc_record_dict = dict()
+    gyro_record_dict = dict()
     logging.info('Reading Data')
     for client_id in tqdm(dm.client_ids):
         acc_dict = dm.load_acc_feat(
@@ -408,16 +468,8 @@ if __name__ == '__main__':
             gyro_dict, 
             client_id
         )
-        shuffle = False if client_id in ['dev', 'test'] else True
-        client_sim_dict = None if client_id in ['dev', 'test'] else dm.get_client_sim_dict(client_id=client_id)
-        dataloader_dict[client_id] = dm.set_dataloader(
-            acc_dict, 
-            gyro_dict, 
-            shuffle=shuffle,
-            client_sim_dict=client_sim_dict,
-            default_feat_shape_a=np.array([128, constants.feature_len_dict[args.acc_feat]]),
-            default_feat_shape_b=np.array([128, constants.feature_len_dict[args.gyro_feat]]),
-        )
+        acc_record_dict[client_id] = acc_dict
+        gyro_record_dict[client_id] = gyro_dict
     
     # We perform 5 fold experiments with 5 seeds by default.
     for fold_idx in fold_indices:
@@ -477,11 +529,87 @@ if __name__ == '__main__':
             per_client_eval_metrics_path = Path(args.per_client_eval_dir).joinpath("per_client_eval_metrics.csv")
         if args.save_per_client_eval:
             logging.info(f'Saving per-client evaluation metrics to {per_client_eval_metrics_path}')
+        local_eval_split_path = save_json_path.joinpath("local_eval_split.json")
 
         server.save_json_file(
             dm.label_dist_dict, 
             save_json_path.joinpath('label.json')
         )
+
+        dataloader_dict = dict()
+        local_eval_dataloader_dict = dict()
+        local_eval_split_info = dict()
+        local_eval_split_seed = args.local_eval_seed + 8 * fold_idx
+        for client_id in dm.client_ids:
+            acc_records = acc_record_dict[client_id]
+            gyro_records = gyro_record_dict[client_id]
+            shuffle = False if client_id in ['dev', 'test'] else True
+            client_sim_dict = None if client_id in ['dev', 'test'] else dm.get_client_sim_dict(client_id=client_id)
+
+            if args.enable_local_eval_split and client_id not in ['dev', 'test']:
+                (
+                    acc_train,
+                    gyro_train,
+                    acc_eval,
+                    gyro_eval,
+                    split_info,
+                ) = split_multimodal_client_records(
+                    acc_records,
+                    gyro_records,
+                    eval_ratio=args.local_eval_ratio,
+                    seed=local_eval_split_seed,
+                    min_eval_samples=args.local_eval_min_samples,
+                    client_id=client_id,
+                )
+                local_eval_split_info[client_id] = split_info
+                train_sim_dict = subset_sim_dict(client_sim_dict, split_info["train_indices"])
+                eval_sim_dict = subset_sim_dict(client_sim_dict, split_info["eval_indices"])
+                dm.get_label_dist(
+                    gyro_train,
+                    client_id
+                )
+                dataloader_dict[client_id] = dm.set_dataloader(
+                    acc_train,
+                    gyro_train,
+                    shuffle=shuffle,
+                    client_sim_dict=train_sim_dict,
+                    default_feat_shape_a=np.array([128, constants.feature_len_dict[args.acc_feat]]),
+                    default_feat_shape_b=np.array([128, constants.feature_len_dict[args.gyro_feat]]),
+                )
+                if len(acc_eval) == 0:
+                    local_eval_dataloader_dict[client_id] = None
+                else:
+                    local_eval_dataloader_dict[client_id] = dm.set_dataloader(
+                        acc_eval,
+                        gyro_eval,
+                        shuffle=False,
+                        client_sim_dict=eval_sim_dict,
+                        default_feat_shape_a=np.array([128, constants.feature_len_dict[args.acc_feat]]),
+                        default_feat_shape_b=np.array([128, constants.feature_len_dict[args.gyro_feat]]),
+                    )
+            else:
+                dataloader_dict[client_id] = dm.set_dataloader(
+                    acc_records,
+                    gyro_records,
+                    shuffle=shuffle,
+                    client_sim_dict=client_sim_dict,
+                    default_feat_shape_a=np.array([128, constants.feature_len_dict[args.acc_feat]]),
+                    default_feat_shape_b=np.array([128, constants.feature_len_dict[args.gyro_feat]]),
+                )
+
+        if args.enable_local_eval_split:
+            split_json_dict = {
+                "dataset": args.dataset,
+                "alpha": args.alpha,
+                "fold": fold_idx,
+                "local_eval_ratio": args.local_eval_ratio,
+                "local_eval_seed": args.local_eval_seed,
+                "effective_local_eval_seed": local_eval_split_seed,
+                "local_eval_min_samples": args.local_eval_min_samples,
+                "clients": local_eval_split_info,
+            }
+            save_local_eval_split_json(split_json_dict, local_eval_split_path)
+            logging.info(f'Saved local eval split metadata to {local_eval_split_path}')
         
         # set seeds again
         set_seed(8*fold_idx)
@@ -594,7 +722,16 @@ if __name__ == '__main__':
             final_epoch = int(args.num_epochs) - 1
             with torch.no_grad():
                 for client_id in client_ids:
-                    dataloader = dataloader_dict.get(client_id)
+                    if args.per_client_eval_data == "local_eval":
+                        dataloader = local_eval_dataloader_dict.get(client_id)
+                        eval_data_type = "local_eval_split"
+                        split_info = local_eval_split_info.get(client_id)
+                        split_file = str(local_eval_split_path)
+                    else:
+                        dataloader = dataloader_dict.get(client_id)
+                        eval_data_type = "local_train_eval"
+                        split_info = None
+                        split_file = None
                     if dataloader is None:
                         logging.warning(f'Skip per-client eval for {client_id}: dataloader is None')
                         continue
@@ -609,7 +746,9 @@ if __name__ == '__main__':
                             client_id=client_id,
                             eval_result=copy.deepcopy(server.result),
                             modality_setting=server.feature,
-                            eval_data_type='local_train_eval',
+                            eval_data_type=eval_data_type,
+                            split_info=split_info,
+                            split_file=split_file,
                         )
                     )
             write_per_client_eval_rows(

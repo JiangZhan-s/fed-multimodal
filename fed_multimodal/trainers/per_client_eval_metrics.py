@@ -18,6 +18,11 @@ PER_CLIENT_EVAL_METRICS_FIELDS = [
     "missing_modality_enabled",
     "missing_modailty_rate",
     "eval_data_type",
+    "local_eval_ratio",
+    "local_eval_seed",
+    "local_train_samples",
+    "local_eval_samples",
+    "split_file",
     "num_samples",
     "eval_loss",
     "eval_acc",
@@ -36,7 +41,10 @@ def build_per_client_eval_row(
     eval_result,
     modality_setting,
     eval_data_type,
+    split_info=None,
+    split_file=None,
 ):
+    split_info = split_info or {}
     return {
         "dataset": args.dataset,
         "fed_alg": args.fed_alg,
@@ -53,6 +61,11 @@ def build_per_client_eval_row(
         "missing_modality_enabled": args.missing_modality,
         "missing_modailty_rate": args.missing_modailty_rate,
         "eval_data_type": eval_data_type,
+        "local_eval_ratio": getattr(args, "local_eval_ratio", None) if eval_data_type == "local_eval_split" else None,
+        "local_eval_seed": getattr(args, "local_eval_seed", None) if eval_data_type == "local_eval_split" else None,
+        "local_train_samples": split_info.get("local_train_samples"),
+        "local_eval_samples": split_info.get("local_eval_samples"),
+        "split_file": split_file,
         "num_samples": eval_result.get("sample"),
         "eval_loss": eval_result.get("loss"),
         "eval_acc": eval_result.get("acc"),
@@ -73,6 +86,23 @@ def write_per_client_eval_rows(csv_path, rows):
     csv_path = Path(csv_path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+
+    if not write_header:
+        with open(str(csv_path), "r", newline="") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames != PER_CLIENT_EVAL_METRICS_FIELDS:
+                existing_rows = list()
+                for existing_row in reader:
+                    existing_rows.append(
+                        {
+                            field: existing_row.get(field)
+                            for field in PER_CLIENT_EVAL_METRICS_FIELDS
+                        }
+                    )
+                with open(str(csv_path), "w", newline="") as rewrite_f:
+                    writer = csv.DictWriter(rewrite_f, fieldnames=PER_CLIENT_EVAL_METRICS_FIELDS)
+                    writer.writeheader()
+                    writer.writerows(existing_rows)
 
     with open(str(csv_path), "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=PER_CLIENT_EVAL_METRICS_FIELDS)
