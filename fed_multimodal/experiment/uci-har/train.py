@@ -71,6 +71,17 @@ def resolve_device(device_arg):
     raise ValueError("Invalid --device value. Use one of: auto, cpu, cuda, cuda:N.")
 
 
+def parse_fold(fold_arg):
+    try:
+        fold_idx = int(fold_arg)
+    except ValueError:
+        raise argparse.ArgumentTypeError("fold must be an integer from 1 to 5.")
+
+    if fold_idx < 1 or fold_idx > 5:
+        raise argparse.ArgumentTypeError("fold must be an integer from 1 to 5.")
+    return fold_idx
+
+
 def parse_args():
     # read path config files
     path_conf = dict()
@@ -98,6 +109,13 @@ def parse_args():
         default='auto',
         type=str,
         help='device to use: auto, cpu, cuda, or cuda:N',
+    )
+
+    parser.add_argument(
+        '--fold',
+        default=None,
+        type=parse_fold,
+        help='optional fold index to run; defaults to all folds 1-5',
     )
     
     parser.add_argument(
@@ -311,6 +329,11 @@ if __name__ == '__main__':
     logging.info(f'Using device: {device}')
     if device.type == 'cuda': logging.info(f'GPU available, use GPU: {torch.cuda.get_device_name(device.index)}')
     save_result_dict = dict()
+    fold_indices = list(range(1, 6)) if args.fold is None else [args.fold]
+    if args.fold is None:
+        logging.info('Running all folds: fold1-fold5')
+    else:
+        logging.info(f'Running fold{args.fold}')
 
     if args.fed_alg in ['fed_avg', 'fed_prox', 'fed_opt']:
         Client = ClientFedAvg
@@ -348,8 +371,8 @@ if __name__ == '__main__':
             default_feat_shape_b=np.array([128, constants.feature_len_dict[args.gyro_feat]]),
         )
     
-    # We perform 5 fold experiments with 5 seeds
-    for fold_idx in range(1, 6):
+    # We perform 5 fold experiments with 5 seeds by default.
+    for fold_idx in fold_indices:
         # number of clients
         client_ids = [client_id for client_id in dm.client_ids if client_id not in ['dev', 'test']]
         num_of_clients = len(client_ids)
