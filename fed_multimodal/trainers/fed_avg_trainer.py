@@ -64,7 +64,7 @@ class ClientFedAvg(object):
         self.eval = EvalMetric(self.multilabel)
         
         # optimizer
-        if self.args.fed_alg in ['fed_avg', 'fed_opt']:
+        if self.args.fed_alg in ['fed_avg', 'fed_opt', 'fed_rant_lite']:
             optimizer = torch.optim.SGD(
                 self.model.parameters(), 
                 lr=self.args.learning_rate,

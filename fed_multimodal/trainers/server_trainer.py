@@ -8,6 +8,12 @@ from copy import deepcopy
 from torch.utils.tensorboard import SummaryWriter
 
 from .evaluation import EvalMetric
+from .fedrant_lite import (
+    compute_fedrant_weights,
+    compute_reliability_scores,
+    compute_update_norm,
+)
+from .rant_weight_metrics import build_rant_weight_rows, write_rant_weight_rows
 
 # logging format
 import logging
@@ -203,6 +209,8 @@ class Server(object):
         self.epoch = epoch
         self.model_updates = list()
         self.num_samples_list = list()
+        self.client_id_list = list()
+        self.train_result_list = list()
         self.delta_controls = list()
         self.result_dict[self.epoch] = dict()
         self.result_dict[self.epoch]['train'] = list()
@@ -372,12 +380,18 @@ class Server(object):
         model_updates: dict, 
         num_sample: int, 
         result: dict,
-        delta_control=None
+        delta_control=None,
+        client_id=None
     ):
         self.model_updates.append(model_updates)
         self.num_samples_list.append(num_sample)
+        self.client_id_list.append(client_id)
+        self.train_result_list.append(result)
         self.result_dict[self.epoch]['train'].append(result)
         self.delta_controls.append(delta_control)
+
+    def set_rant_weights_path(self, file_path):
+        self.rant_weights_path = file_path
 
     def log_epoch_result(
         self, 
@@ -465,6 +479,9 @@ class Server(object):
         # there are no samples, return
         if len(self.num_samples_list) == 0: 
             return
+        if self.args.fed_alg == 'fed_rant_lite':
+            self.average_weights_fedrant_lite()
+            return
         total_num_samples = np.sum(self.num_samples_list)
         w_avg = copy.deepcopy(self.model_updates[0])
 
@@ -490,6 +507,70 @@ class Server(object):
         # update global control if algorithm is scaffold
         if self.args.fed_alg == 'scaffold':
             self.update_server_control()
+
+    def average_weights_fedrant_lite(self):
+        """
+        Aggregate client states with sample-size and reliability weights.
+        """
+        global_state = copy.deepcopy(self.global_model.state_dict())
+        update_norms = [
+            compute_update_norm(global_state, client_state)
+            for client_state in self.model_updates
+        ]
+        losses = [
+            result.get("loss") if result is not None else np.nan
+            for result in self.train_result_list
+        ]
+        reliabilities = compute_reliability_scores(
+            losses=losses,
+            update_norms=update_norms,
+            mode=self.args.rant_reliability,
+            tau_loss=self.args.rant_tau_loss,
+            tau_norm=self.args.rant_tau_norm,
+            min_weight=self.args.rant_min_weight,
+            max_weight=self.args.rant_max_weight,
+        )
+        final_weights = compute_fedrant_weights(
+            self.num_samples_list,
+            reliabilities,
+        )
+        total_num_samples = np.sum(self.num_samples_list)
+        if total_num_samples <= 0:
+            base_weights = [1.0 / len(self.num_samples_list)] * len(self.num_samples_list)
+        else:
+            base_weights = [
+                float(num_sample) / float(total_num_samples)
+                for num_sample in self.num_samples_list
+            ]
+
+        w_avg = copy.deepcopy(self.model_updates[0])
+        for key in w_avg.keys():
+            w_avg[key] = self.model_updates[0][key] * final_weights[0]
+            for idx in range(1, len(self.model_updates)):
+                w_avg[key] += self.model_updates[idx][key] * final_weights[idx]
+        
+        self.global_model.load_state_dict(copy.deepcopy(w_avg))
+
+        if getattr(self.args, "save_rant_weights", False):
+            if not hasattr(self, "rant_weights_path"):
+                raise ValueError("FedRANT-Lite weights path is not configured.")
+            rows = build_rant_weight_rows(
+                args=self.args,
+                fold_idx=self.fold_idx,
+                epoch=self.epoch,
+                client_ids=self.client_id_list,
+                num_samples=self.num_samples_list,
+                base_weights=base_weights,
+                reliabilities=reliabilities,
+                final_weights=final_weights,
+                train_results=self.train_result_list,
+                update_norms=update_norms,
+            )
+            write_rant_weight_rows(
+                self.rant_weights_path,
+                rows,
+                write_mode=self.args.metrics_write_mode,
+            )
 
     def update_server_control(self):
         # update server control

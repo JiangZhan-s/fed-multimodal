@@ -110,6 +110,20 @@ def parse_positive_int(value_arg):
     return value
 
 
+def parse_nonnegative_float(value_arg):
+    value = float(value_arg)
+    if value < 0:
+        raise argparse.ArgumentTypeError("value must be non-negative.")
+    return value
+
+
+def parse_positive_float(value_arg):
+    value = float(value_arg)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("value must be positive.")
+    return value
+
+
 def validate_run_id(run_id):
     if run_id is None:
         return None
@@ -371,8 +385,50 @@ def parse_args():
     parser.add_argument(
         '--fed_alg', 
         default='fed_avg',
+        choices=['fed_avg', 'fed_prox', 'fed_opt', 'scaffold', 'fed_rs', 'fed_rant_lite'],
         type=str,
         help="federated learning aggregation algorithm",
+    )
+
+    parser.add_argument(
+        '--rant_reliability',
+        default='loss_norm',
+        choices=['loss', 'norm', 'loss_norm'],
+        help='FedRANT-Lite reliability score mode',
+    )
+
+    parser.add_argument(
+        '--rant_tau_loss',
+        type=parse_nonnegative_float,
+        default=1.0,
+        help='FedRANT-Lite loss reliability temperature',
+    )
+
+    parser.add_argument(
+        '--rant_tau_norm',
+        type=parse_nonnegative_float,
+        default=1.0,
+        help='FedRANT-Lite update-norm reliability temperature',
+    )
+
+    parser.add_argument(
+        '--rant_min_weight',
+        type=parse_positive_float,
+        default=0.05,
+        help='FedRANT-Lite minimum reliability weight',
+    )
+
+    parser.add_argument(
+        '--rant_max_weight',
+        type=parse_positive_float,
+        default=5.0,
+        help='FedRANT-Lite maximum reliability weight',
+    )
+
+    parser.add_argument(
+        '--save_rant_weights',
+        action='store_true',
+        help='save FedRANT-Lite aggregation weights to CSV',
     )
     
     parser.add_argument(
@@ -495,6 +551,10 @@ if __name__ == '__main__':
     args = parse_args()
     validate_modality_args(args)
     args.modality = normalize_modality(args.modality)
+    if args.rant_max_weight < args.rant_min_weight:
+        raise ValueError("--rant_max_weight must be greater than or equal to --rant_min_weight.")
+    if args.save_rant_weights and args.fed_alg != "fed_rant_lite":
+        raise ValueError("--save_rant_weights can only be used with --fed_alg fed_rant_lite.")
     if args.per_client_eval_data == "local_eval" and not args.enable_local_eval_split:
         raise ValueError("--per_client_eval_data local_eval requires --enable_local_eval_split.")
 
@@ -514,12 +574,14 @@ if __name__ == '__main__':
         logging.info(f'Running fold{args.fold}')
     prepared_metric_paths = set()
 
-    if args.fed_alg in ['fed_avg', 'fed_prox', 'fed_opt']:
+    if args.fed_alg in ['fed_avg', 'fed_prox', 'fed_opt', 'fed_rant_lite']:
         Client = ClientFedAvg
     elif args.fed_alg in ['scaffold']:
         Client = ClientScaffold
     elif args.fed_alg in ['fed_rs']:
         Client = ClientFedRS
+    else:
+        raise ValueError(f"Unsupported fed_alg: {args.fed_alg}")
 
     # load simulation feature
     dm.load_sim_dict()
@@ -632,6 +694,10 @@ if __name__ == '__main__':
             per_client_eval_metrics_path = Path(args.per_client_eval_dir).joinpath("per_client_eval_metrics.csv")
         if args.save_per_client_eval:
             logging.info(f'Saving per-client evaluation metrics to {per_client_eval_metrics_path}')
+        rant_weights_path = save_json_path.joinpath("rant_weights.csv")
+        if args.save_rant_weights:
+            logging.info(f'Saving FedRANT-Lite aggregation weights to {rant_weights_path}')
+            server.set_rant_weights_path(rant_weights_path)
         local_eval_split_path = save_json_path.joinpath(f"local_eval_split_fold{fold_idx}.json")
 
         if args.save_client_metrics:
@@ -643,6 +709,12 @@ if __name__ == '__main__':
         if args.save_per_client_eval:
             prepare_metric_output_path(
                 per_client_eval_metrics_path,
+                args.metrics_write_mode,
+                prepared_metric_paths,
+            )
+        if args.save_rant_weights:
+            prepare_metric_output_path(
+                rant_weights_path,
                 args.metrics_write_mode,
                 prepared_metric_paths,
             )
@@ -801,6 +873,7 @@ if __name__ == '__main__':
                         copy.deepcopy(client.get_parameters()), 
                         client.result['sample'], 
                         client.result,
+                        client_id=client_id,
                         delta_control=copy.deepcopy(client.delta_control)
                     )
                 else:
@@ -809,7 +882,8 @@ if __name__ == '__main__':
                     server.save_train_updates(
                         copy.deepcopy(client.get_parameters()), 
                         client.result['sample'], 
-                        client.result
+                        client.result,
+                        client_id=client_id,
                     )
                 if args.save_client_metrics:
                     append_client_metrics(
