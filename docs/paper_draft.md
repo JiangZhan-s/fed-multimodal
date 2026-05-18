@@ -279,12 +279,59 @@ We also implement FedRANT-Lite, a loss-based reliability aggregation method that
 
 ## Table Placeholders
 
-Table 1: Diagnosis platform components. TODO: summarize `local_eval_split`, `per_client_eval_metrics.csv`, NTR, Worst-20% F1, client variance/std, `run_id` output isolation, and strict split check, including whether each component is used for training or only for diagnosis.
+Table 1: Diagnosis platform components.
 
-Table 2: Main method comparison. TODO: include FedAvg `fuse_base`, FedAvg no-att, FedRANT-Lite no-att, and reliability_gate rows across available folds, with NTR, negative clients, mean_multi_f1, Worst-20% F1, median F1, and result.json F1.
+| Component | Purpose | Output / Artifact | Why it matters |
+|---|---|---|---|
+| `local_eval_split` | Split each client's local data into `local_train` and `local_eval`. | `local_eval_split_fold{fold}.json` | Enables client-level evaluation on held-out local data rather than train-time metrics. |
+| Per-client evaluation | Evaluate the global model separately on each client's `local_eval` split. | `per_client_eval_metrics.csv` | Reveals heterogeneous client-level behavior hidden by global averages. |
+| Aligned multimodal and unimodal baselines | Compare `acc_gyro` with acc-only and gyro-only under the same client split. | `acc_gyro` / `acc` / `gyro` per-client CSVs | Enables client-level negative transfer diagnosis. |
+| Negative Transfer Rate (NTR) | Measure how often multimodal F1 is lower than the best single-modality F1 by more than eps. | `diagnosis_summary.csv` | Quantifies client-level negative transfer. |
+| Worst-20% F1 | Measure the mean F1 of the bottom 20% clients. | `diagnosis_summary.csv` | Captures tail-client performance. |
+| Client variance / std | Measure dispersion of client-level F1. | `diagnosis_summary.csv` | Shows fairness and stability across clients. |
+| Strict split check | Verify multi / acc / gyro runs use compatible `local_eval` splits. | Diagnosis warnings or errors | Prevents invalid client-level comparisons. |
+| `run_id` output isolation | Isolate smoke tests, formal runs, and repeated experiments. | `result/.../runs/{run_id}/` | Avoids CSV contamination and accidental overwrite. |
+| Diagnostic output package | Save client-level gaps and summary metrics. | `client_level_negative_transfer.csv`, `diagnosis_summary.csv`, `diagnosis_config.json` | Makes the diagnosis reproducible and auditable. |
 
-Table 3: FedRANT-Lite ablation. TODO: include default loss_norm, loss-only, norm-only, stronger loss, and stronger norm variants with NTR, negative clients, mean_multi_f1, Worst-20% F1, and result.json F1.
+Table 1 summarizes the diagnostic infrastructure used throughout the paper. These components are independent of FedRANT-Lite itself. This is why the diagnostic contribution remains stable even when method results are mixed across folds.
 
-Table 4: Fold1 vs fold2 stability. TODO: compare FedAvg no-att and FedRANT-Lite no-att across fold1 and fold2, with FedAvg `fuse_base` fold2 as a reference.
+Table 2: Main method comparison.
+
+| Method | Fusion | Aggregation | Fold | NTR ↓ | Negative Clients ↓ | Mean F1 ↑ | Worst-20% F1 ↑ | Median F1 ↑ | Global F1 ↑ |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| FedAvg `fuse_base` | `fuse_base` | sample-count FedAvg | 1 | 0.981 | 103/105 | 5.442 | 1.880 | 5.882 | 19.218 |
+| FedAvg no-att | no-att | sample-count FedAvg | 1 | 0.086 | 9/105 | 27.439 | 14.589 | 26.111 | 36.609 |
+| FedRANT-Lite loss `fuse_base` | `fuse_base` | loss-based reliability | 1 | 0.876 | 92/105 | 7.610 | 2.351 | 6.667 | 19.582 |
+| FedRANT-Lite loss no-att | no-att | loss-based reliability | 1 | 0.048 | 5/105 | 32.453 | 16.502 | 33.333 | 36.637 |
+| FedAvg reliability_gate | reliability_gate | sample-count FedAvg | 1 | 0.990 | 104/105 | 5.323 | 1.810 | 5.556 | 11.881 |
+| FedRANT-Lite loss reliability_gate | reliability_gate | loss-based reliability | 1 | 0.990 | 104/105 | 5.323 | 1.810 | 5.556 | 11.987 |
+
+Table 2 shows that no-att greatly reduces NTR compared with `fuse_base` on fold1. FedRANT-Lite loss further improves the no-att result on fold1, reducing NTR and improving mean and Worst-20% F1 without reducing global F1. In contrast, reliability_gate performs poorly despite not collapsing in its gate weights. These fold1 results should be interpreted together with the fold2 stability results in Table 4.
+
+Table 3: FedRANT-Lite ablation.
+
+| Method | Reliability Signal | NTR ↓ | Negative Clients ↓ | Mean F1 ↑ | Worst-20% F1 ↑ | Median F1 ↑ | Global F1 ↑ |
+|---|---|---:|---:|---:|---:|---:|---:|
+| FedAvg `fuse_base` | none | 0.981 | 103/105 | 5.442 | 1.880 | 5.882 | 19.218 |
+| FedRANT-Lite default | loss_norm | 0.981 | 103/105 | 5.752 | 1.983 | 6.061 | 13.983 |
+| FedRANT-Lite loss | loss | 0.876 | 92/105 | 7.610 | 2.351 | 6.667 | 19.582 |
+| FedRANT-Lite norm | update_norm | 0.981 | 103/105 | 5.455 | 1.880 | 5.882 | 18.743 |
+| FedRANT-Lite loss_norm tau_loss=2 | loss_norm, tau_loss=2 | 0.905 | 95/105 | 6.516 | 2.314 | 6.667 | 14.347 |
+| FedRANT-Lite loss_norm tau_norm=2 | loss_norm, tau_norm=2 | 0.981 | 103/105 | 5.692 | 1.983 | 6.061 | 14.305 |
+| FedAvg no-att | none, no-att fusion | 0.086 | 9/105 | 27.439 | 14.589 | 26.111 | 36.609 |
+
+Among aggregation-only variants under `fuse_base`, loss-only gives the clearest improvement. It reduces NTR from 0.981 to 0.876 and improves Mean F1 and Worst-20% F1. In contrast, update_norm alone and stronger tau_norm do not meaningfully reduce NTR. However, all `fuse_base` FedRANT-Lite variants remain far worse than FedAvg no-att. This supports the conclusion that aggregation reliability alone cannot repair unstable `fuse_base` fusion. The stronger direction is to use stable no-att fusion and then evaluate reliability aggregation on top of it.
+
+Table 4: Fold1 vs fold2 stability.
+
+| Method | Fold | NTR ↓ | Negative Clients ↓ | Mean F1 ↑ | Worst-20% F1 ↑ | Median F1 ↑ | Global F1 ↑ |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| FedAvg no-att | 1 | 0.086 | 9/105 | 27.439 | 14.589 | 26.111 | 36.609 |
+| FedRANT-Lite loss no-att | 1 | 0.048 | 5/105 | 32.453 | 16.502 | 33.333 | 36.637 |
+| FedAvg `fuse_base` | 2 | 1.000 | 105/105 | 5.224 | 1.956 | 5.556 | 12.849 |
+| FedAvg no-att | 2 | 0.981 | 103/105 | 13.681 | 5.551 | 14.359 | 21.461 |
+| FedRANT-Lite loss no-att | 2 | 0.990 | 104/105 | 13.337 | 5.220 | 13.889 | 14.900 |
+
+Table 4 confirms that no-att remains better than `fuse_base` on fold2 in Mean F1, Worst-20% F1, Median F1, and Global F1. However, fold2 does not reproduce the low NTR observed in fold1. FedRANT-Lite loss no-att also does not outperform FedAvg no-att on fold2. Therefore, the aggregation gain is fold-dependent and should not be overstated.
 
 Table 5: Missing modality results placeholder. TODO: fill after missing-modality runs are completed; expected columns include missing setting, method, fold, NTR, negative clients, mean_multi_f1, Worst-20% F1, and result.json F1.
