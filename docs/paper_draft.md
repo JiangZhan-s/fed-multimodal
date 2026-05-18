@@ -2,7 +2,7 @@
 
 ## Abstract Draft
 
-Multimodal federated learning is usually evaluated by global average accuracy or F1, but these aggregate metrics may hide client-level degradation: for some clients, a multimodal model can underperform the best single-modality baseline. This work studies this problem in the UCI-HAR acc/gyro setting of FedMultimodal. We introduce a client-level diagnosis protocol based on local client holdout splits, aligned multimodal and single-modality runs, and a negative transfer rate (NTR) metric. Our diagnosis shows that the `fuse_base` attention/fusion setting can produce severe client-level negative transfer under alpha=5.0, while a no-attention multimodal baseline substantially reduces NTR. We further implement FedRANT-Lite, a server-side reliability-aware aggregation method using training-time loss and update statistics without accessing local evaluation, test, or NTR signals during training. Preliminary results show that loss-based aggregation provides weak improvement under `fuse_base` and a positive signal with no-attention on fold1, but the fold2 stability check does not reproduce the aggregation gain. These findings suggest that the diagnostic contribution is currently stronger than the method conclusion, and more folds and missing-modality experiments are needed before making strong claims.
+Multimodal federated learning is usually evaluated by global average accuracy or F1, but these aggregate metrics may hide client-level degradation: for some clients, a multimodal model can underperform the best single-modality baseline. This work studies this problem in the UCI-HAR acc/gyro setting of FedMultimodal. We introduce a client-level diagnosis protocol based on local client holdout splits, aligned multimodal and single-modality runs, and Negative Transfer Rate (NTR). Our diagnosis reveals that the `fuse_base` attention setting can produce severe hidden client-level degradation under alpha=5.0, while a no-attention (no-att) multimodal baseline changes this behavior substantially. We further implement FedRANT-Lite, a server-side loss-based reliability aggregation method using training-time loss without accessing local evaluation, test, or NTR signals during training. Preliminary results show mixed behavior: loss-based reliability aggregation gives weak improvement under `fuse_base` and a positive signal with no-att on fold1, but the fold2 stability check does not reproduce the aggregation gain. These findings suggest that the diagnostic protocol is currently the strongest contribution, while reliability-aware aggregation remains a promising but unvalidated direction requiring more folds and missing-modality experiments.
 
 ## 1. Introduction
 
@@ -12,13 +12,13 @@ This paper focuses on this client-level failure mode. We use the term client-lev
 
 Our work is built on the FedMultimodal codebase, but the goal is not a simple reproduction of its global results. Instead, we first construct a client-level diagnosis protocol that makes negative transfer measurable. This protocol introduces local client holdout evaluation, aligned multimodal and single-modality runs, per-client evaluation outputs, and strict split checking. It allows us to compare `acc_gyro`, `acc`, and `gyro` under the same dataset, fold, client set, local evaluation ratio, and local evaluation seed.
 
-The diagnosis reveals that evaluation at the client level can lead to different conclusions from global average reporting. In particular, under the UCI-HAR alpha=5.0 setting, the `fuse_base` attention/fusion configuration shows severe client-level degradation on fold1 and fold2. A no-attention sanity check substantially reduces this degradation, suggesting that fusion/attention design is a major risk source. This finding motivates a cautious method exploration: rather than assuming a heavy fusion module is always beneficial, we examine whether simpler fusion combined with reliability-aware aggregation can reduce client-level negative transfer.
+The diagnosis reveals that evaluation at the client level can lead to different conclusions from global average reporting. In particular, under the UCI-HAR alpha=5.0 setting, the `fuse_base` attention setting shows severe client-level degradation on fold1 and fold2. A no-att sanity check substantially changes this degradation pattern, suggesting that fusion/attention design is a major risk source. This finding motivates a cautious method exploration: rather than assuming a heavy fusion module is always beneficial, we examine whether simpler fusion combined with reliability-aware aggregation can reduce client-level negative transfer.
 
 Figure 1 summarizes the overall diagnosis pipeline used in this work.
 
 ![Overall diagnosis pipeline](figures/fig1_pipeline.png)
 
-This draft makes four contributions. First, it introduces a client-level local holdout protocol for multimodal federated diagnosis. Second, it defines and uses NTR, worst-client F1, and client variance/std to quantify client-level degradation beyond global average metrics. Third, it diagnoses the risk of the `fuse_base` attention/fusion setting and shows that no-attention multimodal fusion is an important strong baseline. Fourth, it implements FedRANT-Lite, a loss-based reliability-aware aggregation method, and reports preliminary positive and negative evidence. The method claim is intentionally limited: FedRANT-Lite loss with no-attention gives a positive signal on fold1, but fold2 does not reproduce the aggregation gain. Therefore, the current method result should be treated as preliminary and requiring more folds and missing-modality validation.
+This draft makes four contributions. First, it introduces a client-level local holdout protocol for multimodal federated diagnosis. Second, it defines and uses NTR, Worst-20% F1, and client variance/std to quantify client-level degradation beyond global average metrics. Third, it diagnoses the risk of the `fuse_base` attention setting and shows that no-att multimodal fusion is an important baseline. Fourth, it implements FedRANT-Lite, a loss-based reliability aggregation method, and reports preliminary positive and negative evidence. The method claim is intentionally limited: FedRANT-Lite with no-att gives a positive signal on fold1, but fold2 does not reproduce the aggregation gain. Therefore, the current method result should be treated as preliminary and requiring more folds and missing-modality validation.
 
 ## 2. Problem Setup
 
@@ -71,7 +71,7 @@ The three runs are aligned by dataset, alpha, fold, local evaluation ratio, loca
 
 ### 3.3 Metrics
 
-The primary metric is negative transfer rate (NTR). For each valid client \(k\), let \(F1_{multi}(k)\) be the F1 score of the multimodal model on that client's local evaluation split. Let \(F1_{acc}(k)\) and \(F1_{gyro}(k)\) be the corresponding single-modality F1 scores. The best single-modality reference is:
+The primary metric is Negative Transfer Rate (NTR). For each valid client \(k\), let \(F1_{multi}(k)\) be the F1 score of the multimodal model on that client's local evaluation split. Let \(F1_{acc}(k)\) and \(F1_{gyro}(k)\) be the corresponding single-modality F1 scores. The best single-modality reference is:
 
 \[
 F1_{best\_single}(k) = \max(F1_{acc}(k), F1_{gyro}(k)).
@@ -91,7 +91,7 @@ gap(k) < -\epsilon.
 
 Since the current F1 values are stored as percentages in \([0,100]\), the default threshold is \(\epsilon=1.0\). This avoids treating tiny numerical differences as meaningful degradation. NTR is then the fraction of valid clients that satisfy this negative-transfer condition.
 
-In addition to NTR, the protocol reports worst-client and dispersion metrics. Worst-20% client F1 is computed by sorting clients by multimodal F1 and averaging the bottom 20%. This metric is intended to expose tail-client behavior that can be invisible in a global mean. Client variance and standard deviation measure the spread of per-client multimodal F1, helping distinguish uniformly low performance from high inequality across clients. The global `result.json` F1 is still reported, but mainly as a conventional reference rather than the only evaluation target.
+In addition to NTR, the protocol reports worst-client and dispersion metrics. Worst-20% F1 is computed by sorting clients by multimodal F1 and averaging the bottom 20%. This metric is intended to expose tail-client behavior that can be invisible in a global mean. Client variance and standard deviation measure the spread of per-client multimodal F1, helping distinguish uniformly low performance from high inequality across clients. The global `result.json` F1 is still reported, but mainly as a conventional reference rather than the only evaluation target.
 
 ### 3.4 Output isolation and reproducibility
 
@@ -139,13 +139,13 @@ Thus, the base contribution of a client still grows with its sample count, but a
 
 ### 4.2 Design boundary
 
-FedRANT-Lite is deliberately limited. It is not a complex fusion module, a modality completion method, or a local evaluation oracle. It can be combined with different multimodal fusion settings, including `fuse_base` and no-attention fusion, because it operates only at the server aggregation stage.
+FedRANT-Lite is deliberately limited. It is not a complex fusion module, a modality completion method, or a local evaluation oracle. It can be combined with different multimodal fusion settings, including `fuse_base` and no-att fusion, because it operates only at the server aggregation stage.
 
 The method also logs the aggregation process in `rant_weights.csv`, including sample counts, reliability scores, final weights, train loss, train F1, and update norm. This log is used for interpretability after training. It is not used to tune weights online in the current implementation.
 
 ### 4.3 Current method status
 
-Current evidence suggests that FedRANT-Lite is more reasonable when paired with no-attention multimodal fusion than when paired with `fuse_base`. Under `fuse_base`, loss-based FedRANT-Lite provides only weak improvement and cannot repair the severe client-level degradation caused by the fusion setting. Under no-attention fusion, fold1 shows a clearer positive signal: NTR and worst-client metrics improve without hurting global F1. However, the fold2 stability check does not reproduce this gain. Therefore, FedRANT-Lite should be described as a candidate reliability-aware aggregation component, not as a fully validated solution.
+Current evidence suggests that FedRANT-Lite is more reasonable when paired with no-att multimodal fusion than when paired with `fuse_base`. Under `fuse_base`, loss-based FedRANT-Lite provides only weak improvement and cannot repair the severe client-level degradation caused by the fusion setting. Under no-att fusion, fold1 shows a positive signal: NTR and Worst-20% F1 improve without hurting global F1. However, the fold2 stability check does not reproduce this gain. Therefore, FedRANT-Lite should be described as a candidate reliability-aware aggregation component, not as a validated solution.
 
 ## 5. Experimental Setup
 
@@ -153,9 +153,9 @@ The experiments are based on the FedMultimodal KDD 2023 codebase and use the UCI
 
 The federated setting follows the FedMultimodal training pipeline with controlled additions for fold selection, run-level output isolation, and local client holdout evaluation. We evaluate alpha=0.1 and alpha=5.0, with most method diagnostics currently focused on alpha=5.0. We use fold1 and fold2 for the main diagnostic evidence, and fold3 remains a planned stability experiment. Unless otherwise stated, formal runs use sample_rate=0.1, num_epochs=50, learning_rate=0.05, global_learning_rate=0.025, local_epochs=1, local_eval_ratio=0.2, local_eval_seed=2026, and local_eval_min_samples=5.
 
-The compared methods and settings include FedAvg with `fuse_base`, FedAvg with no-attention multimodal fusion, FedRANT-Lite loss aggregation with `fuse_base`, FedRANT-Lite loss aggregation with no-attention fusion, FedRANT-Lite reliability ablations, and reliability_gate v1. The acc-only and gyro-only runs are used as single-modality references for NTR computation rather than as direct multimodal methods.
+The compared methods and settings include FedAvg with `fuse_base`, FedAvg with no-att multimodal fusion, FedRANT-Lite loss aggregation with `fuse_base`, FedRANT-Lite loss aggregation with no-att fusion, FedRANT-Lite reliability ablations, and reliability_gate v1. The acc-only and gyro-only runs are used as single-modality references for NTR computation rather than as direct multimodal methods.
 
-The evaluation reports both conventional global and client-level diagnostic metrics. Global metrics are read from `result.json`, including F1, accuracy, and top-5 accuracy. Client-level metrics include NTR, negative clients, mean multimodal F1, worst-20% client F1, median client F1, variance, and standard deviation. For FedRANT-Lite, `rant_weights.csv` is used to analyze reliability scores, final aggregation weights, train loss, and update norm. For reliability_gate, `gate_weights.csv` is used to inspect gate balance and entropy. These logging files support interpretation but are not used as training-time evaluation signals.
+The evaluation reports both conventional global and client-level diagnostic metrics. Global metrics are read from `result.json`, including F1, accuracy, and top-5 accuracy. Client-level metrics include NTR, negative clients, mean multimodal F1, Worst-20% F1, median client F1, variance, and standard deviation. For FedRANT-Lite, `rant_weights.csv` is used to analyze reliability scores, final aggregation weights, train loss, and update norm. For reliability_gate, `gate_weights.csv` is used to inspect gate balance and entropy. These logging files support interpretation but are not used as training-time evaluation signals.
 
 Several safeguards are used to keep the experiments reproducible and avoid output contamination. Each formal run uses a distinct `run_id`, and `metrics_write_mode=error_if_exists` prevents accidental appending to existing CSV files. Each run writes a fold-specific `local_eval_split_fold{fold}.json`, and NTR computation uses strict split checking to verify aligned fold, client IDs, local evaluation ratio, seed, and sample counts across `acc_gyro`, `acc`, and `gyro`. No local_eval metrics, test metrics, NTR values, or per-client evaluation F1 scores are used during training; they are only used after training for diagnosis.
 
@@ -182,18 +182,18 @@ Figure 4 visualizes the `fuse_base` degradation across fold1 and fold2, while Fi
 
 ### 6.2 no-att substantially reduces degradation but is fold-dependent
 
-The no-attention sanity check changes the interpretation of the problem. On fold1, removing `fuse_base` attention substantially reduces client-level negative transfer. FedAvg no-att reaches NTR=0.085714, with 9 negative clients out of 105, mean_multi_f1=27.439009, worst20_multi_f1=14.588930, and global result.json F1=36.609368. Compared with FedAvg `fuse_base`, this is a large improvement in both client-level and global metrics.
+The no-att sanity check changes the interpretation of the problem. On fold1, removing `fuse_base` attention substantially reduces client-level negative transfer. FedAvg no-att reaches NTR=0.085714, with 9 negative clients out of 105, mean_multi_f1=27.439009, worst20_multi_f1=14.588930, and global result.json F1=36.609368. Compared with FedAvg `fuse_base`, this is a large improvement in both client-level and global metrics.
 
 | method | NTR | negative clients | mean_multi_f1 | worst20_multi_f1 | result.json F1 |
 |---|---:|---:|---:|---:|---:|
 | FedAvg fuse_base | 0.980952 | 103 | 5.441510 | 1.879602 | 19.217786 |
 | FedAvg no-att | 0.085714 | 9 | 27.439009 | 14.588930 | 36.609368 |
 
-Fold2 gives a more cautious picture. FedAvg no-att fold2 still improves over FedAvg `fuse_base` fold2 in mean_multi_f1, worst-client behavior, median F1, and global result.json F1. However, NTR remains high: FedAvg no-att fold2 has NTR=0.980952, 103 negative clients, mean_multi_f1=13.680920, and result.json F1=21.460767. Thus, no-attention is more stable than `fuse_base` in performance, but it is not a complete solution to client-level negative transfer across folds.
+Fold2 gives a more cautious picture. FedAvg no-att fold2 still improves over FedAvg `fuse_base` fold2 in mean_multi_f1, Worst-20% F1, median F1, and global result.json F1. However, NTR remains high: FedAvg no-att fold2 has NTR=0.980952, 103 negative clients, mean_multi_f1=13.680920, and result.json F1=21.460767. Thus, no-att is more stable than `fuse_base` in performance, but it is not a complete solution to client-level negative transfer across folds.
 
 This result is important for the paper narrative. It suggests that the severe fold1 `fuse_base` degradation is strongly tied to the fusion/attention configuration, but it also shows that simply removing attention does not guarantee low NTR on every fold.
 
-Figure 5 highlights the no-attention sanity check and its fold-level instability. Figure 3 compares mean client F1 and worst-20% client F1 across representative methods.
+Figure 5 highlights the fold stability check for no-att variants. Figure 3 compares mean client F1 and Worst-20% F1 across representative methods.
 
 ![No-attention fold stability](figures/fig5_noatt_fold_stability.png)
 
@@ -210,7 +210,7 @@ We next evaluate whether reliability-aware aggregation can mitigate client-level
 
 This is a weak but meaningful signal: train-loss-based reliability can change the client-level outcome, but it cannot repair the main `fuse_base` failure mode.
 
-The more promising result appears when FedRANT-Lite loss aggregation is combined with no-attention fusion on fold1. Compared with FedAvg no-att, FedRANT no-att reduces NTR from 0.085714 to 0.047619, reduces negative clients from 9 to 5, increases mean_multi_f1 to 32.452982, and improves worst20_multi_f1 to 16.501867. The global result.json F1 remains essentially unchanged.
+The more promising result appears when FedRANT-Lite loss aggregation is combined with no-att fusion on fold1. Compared with FedAvg no-att, FedRANT no-att reduces NTR from 0.085714 to 0.047619, reduces negative clients from 9 to 5, increases mean_multi_f1 to 32.452982, and improves worst20_multi_f1 to 16.501867. The global result.json F1 remains essentially unchanged.
 
 | method | NTR | negative clients | mean_multi_f1 | worst20_multi_f1 | median_multi_f1 | result.json F1 |
 |---|---:|---:|---:|---:|---:|---:|
@@ -224,9 +224,9 @@ However, the fold2 stability check does not reproduce this gain. In fold2, FedAv
 | FedAvg no-att | 2 | 0.980952 | 103 | 13.680920 | 5.550552 | 14.358974 | 21.460767 |
 | FedRANT loss no-att | 2 | 0.990476 | 104 | 13.336897 | 5.219807 | 13.888889 | 14.900063 |
 
-Therefore, the correct conclusion is mixed. FedRANT-Lite loss aggregation shows preliminary promise in fold1, especially when paired with no-attention fusion, but the gain is not yet stable across folds. At the current stage, FedRANT-Lite should be treated as a useful candidate component that requires further validation rather than a final method.
+Therefore, the correct conclusion is mixed. FedRANT-Lite loss aggregation shows preliminary promise in fold1, especially when paired with no-att fusion, but the gain is not yet stable across folds. At the current stage, FedRANT-Lite should be treated as a useful candidate component that requires further validation rather than a final method.
 
-Figure 6 summarizes the FedRANT-Lite reliability ablation and shows that loss-based reliability is the best current aggregation-only variant under `fuse_base`, although it remains far from the no-attention baseline.
+Figure 6 summarizes the FedRANT-Lite reliability ablation and shows that loss-based reliability is the best current aggregation-only variant under `fuse_base`, although it remains far from the no-att baseline.
 
 ![FedRANT-Lite ablation](figures/fig6_fedrant_ablation_ntr.png)
 
@@ -251,24 +251,40 @@ The negative and mixed findings are informative rather than merely disappointing
 
 First, aggregation-only reliability cannot repair an unstable fusion design by itself. Under `fuse_base`, FedRANT-Lite loss improves NTR and mean client-level F1 slightly, but the system still has many negative-transfer clients. This suggests that the main failure mode is not only that FedAvg weights unreliable clients too heavily; the fusion/attention mechanism itself can create harmful client-level behavior.
 
-Second, simple reliability signals are limited. Train loss appears more useful than update norm in the current ablations, but even loss-based weighting is not consistently beneficial across folds. This may happen because high loss can indicate a difficult but important client rather than an unreliable update. Down-weighting such clients may improve some rounds or folds but harm others. Therefore, FedRANT-Lite should be described as a lightweight candidate rather than a complete solution.
+Second, simple reliability signals are limited. Train loss appears more useful than update norm in the current ablations, but even loss-based weighting is not reliably beneficial across folds. This may happen because high loss can indicate a difficult but important client rather than an unreliable update. Down-weighting such clients may improve some rounds or folds but harm others. Therefore, FedRANT-Lite should be described as a lightweight candidate rather than a complete solution.
 
 Third, reliability_gate v1 is insufficient. The gate did not collapse, which means the failure is not simply caused by a degenerate one-modality solution. Instead, a balanced learnable gate still failed to improve NTR. This suggests that naive gating does not provide a reliable modality-quality estimate in the current setup. If fusion reliability remains a direction, it needs more careful design than the current v1 gate.
 
-Fourth, the fold2 stability result is the main caution for the method claim. FedRANT no-att fold1 is the strongest positive method result so far, but fold2 does not reproduce the aggregation gain. No-attention still appears safer than `fuse_base`, but FedRANT-Lite does not yet have stable evidence across folds. The paper should therefore avoid statements such as "FedRANT solves negative transfer." A more accurate statement is that FedRANT-Lite shows preliminary promise under no-attention on fold1, but requires further validation.
+Fourth, the fold2 stability result is the main caution for the method claim. FedRANT no-att fold1 is the most positive method result so far, but fold2 does not reproduce the aggregation gain. No-att still appears safer than `fuse_base`, but FedRANT-Lite does not yet have stable evidence across folds. The paper should therefore describe FedRANT-Lite as showing preliminary promise under no-att on fold1, while still requiring further validation.
 
 Overall, the diagnosis contribution remains strong: the platform exposes client-level degradation, identifies `fuse_base` as a risky setting, and shows why global average performance is insufficient. The method contribution should be framed as an initial reliability-aware aggregation attempt guided by this diagnosis. The next experiments should focus on fold3, alpha=0.1, missing-modality diagnosis, and client-level analysis of `rant_weights.csv` before deciding how strongly to position FedRANT-Lite in the final paper.
 
 ## 8. Next Experiments
 
-The next experiments should focus on validation rather than adding new modules.
+The next experiments should focus on validation rather than adding new modules. The most urgent step is fold3 stability validation for the no-att setting. The current fold1 and fold2 results lead to different interpretations of FedRANT-Lite loss aggregation: fold1 suggests that FedRANT no-att can reduce NTR and improve Worst-20% F1, while fold2 does not reproduce this gain. A fold3 run should therefore compare FedAvg no-att and FedRANT loss no-att under the same alpha=5.0, sample rate, learning rate, local evaluation split, and NTR protocol. If fold3 behaves closer to fold1, FedRANT no-att can remain a plausible method candidate. If fold3 behaves closer to fold2, the method should be framed more conservatively as an auxiliary reliability component rather than the main solution.
 
-1. Run FedRANT loss no-att on fold3 to test whether fold2 or fold1 is the outlier.
-2. Run alpha=0.1 FedRANT no-att to test whether the behavior is specific to alpha=5.0.
-3. Add missing-modality diagnosis to test whether modality absence increases NTR.
-4. Analyze `rant_weights.csv` at the client level to see whether down-weighted clients overlap with negative-transfer clients or high-loss clients.
-5. Decide the final method framing only after more folds and missing-modality results are available.
+The second validation direction is alpha=0.1. We already have baseline diagnosis under alpha=0.1, where negative transfer is much lower than in alpha=5.0 but tail-client performance remains weak. Running FedRANT no-att under alpha=0.1 would test whether loss-based reliability aggregation has value outside the current high-degradation alpha=5.0 setting. This is important because a method that only works in one heterogeneity condition would need a narrower claim.
+
+The third direction is missing-modality diagnosis. The current experiments are clean setting experiments: all modalities are available, and the comparison focuses on fusion and aggregation behavior. However, missing or unreliable modality streams are a central practical issue in multimodal federated learning. Future experiments should introduce missing-modality settings and measure how NTR, negative clients, Worst-20% F1, and variance change. These experiments can test whether no-att fusion and FedRANT-Lite remain useful when modality availability is less reliable.
+
+The fourth direction is interpretability analysis using `rant_weights.csv`. The current method logs reliability scores, final aggregation weights, train loss, train F1, and update norm. These logs should be analyzed at the client level to identify which clients are repeatedly down-weighted. A useful analysis would test whether down-weighted clients overlap with high-loss clients, negative-transfer clients, or clients with poor local_eval behavior. This would not prove causality, but it would make the aggregation behavior more interpretable and help decide whether the reliability signal is meaningful.
+
+The final method decision should be made after these validations. If fold3 supports the fold1 pattern and missing-modality experiments also show consistent gains, FedRANT no-att can continue as the main method candidate. If fold3 is closer to fold2, or if missing-modality experiments do not show reliable improvement, FedRANT-Lite should be positioned as a diagnostic or auxiliary component rather than the central method contribution. In either case, the client-level diagnosis protocol remains a stable contribution because it exposes degradation patterns that global average metrics alone cannot show.
 
 ## Conclusion Draft
 
-This work reframes multimodal federated learning evaluation from a global-average view to a client-level negative transfer diagnosis. The current platform introduces local client holdout evaluation, aligned multimodal/single-modality comparison, NTR, worst-client F1, and variance metrics. The strongest finding so far is diagnostic: `fuse_base` attention can produce severe client-level degradation under alpha=5.0, while no-attention multimodal fusion substantially mitigates the issue. FedRANT-Lite loss aggregation provides a promising fold1 signal when combined with no-attention, but fold2 does not reproduce the gain. Thus, the current paper should emphasize the diagnosis protocol and careful positive/negative evidence, while treating reliability-aware aggregation as a preliminary method direction requiring further validation.
+This work starts from client-level negative transfer diagnosis rather than global-average reproduction. We build a diagnosis protocol with `local_eval_split`, aligned acc_gyro/acc/gyro comparison, NTR, Worst-20% F1, and client variance/std. Using this protocol, we find that `fuse_base` attention can cause severe client-level degradation in the UCI-HAR alpha=5.0 setting, and that a no-att sanity check substantially changes the client-level behavior. These findings suggest that fusion/attention design is a key risk source and that global average metrics alone are not sufficient for evaluating multimodal federated learning.
+
+We also implement FedRANT-Lite, a loss-based reliability aggregation method that uses only training-time signals and does not access local_eval, test, or NTR information during training. FedRANT-Lite shows a positive signal with no-att on fold1, but this gain is not reproduced on fold2. In addition, reliability_gate v1 is a negative result: the gate does not collapse, but it does not improve client-level degradation. Therefore, the current conclusion should remain cautious. The diagnostic contribution is stronger and more stable than the method contribution, while reliability-aware aggregation remains a preliminary direction that requires more folds, alpha=0.1 validation, missing-modality experiments, and client-level weight analysis before stronger claims can be made.
+
+## Table Placeholders
+
+Table 1: Diagnosis platform components. TODO: summarize `local_eval_split`, `per_client_eval_metrics.csv`, NTR, Worst-20% F1, client variance/std, `run_id` output isolation, and strict split check, including whether each component is used for training or only for diagnosis.
+
+Table 2: Main method comparison. TODO: include FedAvg `fuse_base`, FedAvg no-att, FedRANT-Lite no-att, and reliability_gate rows across available folds, with NTR, negative clients, mean_multi_f1, Worst-20% F1, median F1, and result.json F1.
+
+Table 3: FedRANT-Lite ablation. TODO: include default loss_norm, loss-only, norm-only, stronger loss, and stronger norm variants with NTR, negative clients, mean_multi_f1, Worst-20% F1, and result.json F1.
+
+Table 4: Fold1 vs fold2 stability. TODO: compare FedAvg no-att and FedRANT-Lite no-att across fold1 and fold2, with FedAvg `fuse_base` fold2 as a reference.
+
+Table 5: Missing modality results placeholder. TODO: fill after missing-modality runs are completed; expected columns include missing setting, method, fold, NTR, negative clients, mean_multi_f1, Worst-20% F1, and result.json F1.
