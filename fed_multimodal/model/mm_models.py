@@ -487,12 +487,18 @@ class HARClassifier(nn.Module):
         n_filters: int=32,      # number of filters
         en_att: bool=False,     # Enable self attention or not
         att_name: str='',       # Attention Name
-        d_head: int=6           # Head dim
+        d_head: int=6,          # Head dim
+        gate_temperature: float=1.0,
+        gate_min_weight: float=0.0
     ):
         super(HARClassifier, self).__init__()
         self.dropout_p = 0.1
         self.en_att = en_att
         self.att_name = att_name
+        self.gate_temperature = gate_temperature
+        self.gate_min_weight = gate_min_weight
+        self.last_gate_stats = None
+        self.last_gate_entropy = None
         
         # Conv Encoder module
         self.acc_conv = Conv1dEncoder(
@@ -547,6 +553,12 @@ class HARClassifier(nn.Module):
                 d_hid=d_hid,
                 d_head=d_head
             )
+        elif self.att_name == "reliability_gate":
+            self.gate_mlp = nn.Sequential(
+                nn.Linear(d_hid * 2, d_hid),
+                nn.ReLU(),
+                nn.Linear(d_hid, 2)
+            )
         
         # classifier head
         if self.en_att and self.att_name == "fuse_base":
@@ -581,6 +593,9 @@ class HARClassifier(nn.Module):
                 m.bias.data.fill_(0.01)
 
     def forward(self, x_acc, x_gyro, l_a, l_b):
+        self.last_gate_stats = None
+        self.last_gate_entropy = None
+
         # 1. Conv forward
         x_acc = self.acc_conv(x_acc)
         x_gyro = self.gyro_conv(x_gyro)
@@ -613,6 +628,24 @@ class HARClassifier(nn.Module):
                     val_b=l_b, 
                     a_len=x_acc.shape[1]
                 )
+            elif self.att_name == "reliability_gate":
+                x_acc = torch.mean(x_acc, axis=1)
+                x_gyro = torch.mean(x_gyro, axis=1)
+                gate_input = torch.cat((x_acc, x_gyro), dim=1)
+                gate_logits = self.gate_mlp(gate_input) / self.gate_temperature
+                gate = torch.softmax(gate_logits, dim=1)
+                if self.gate_min_weight > 0:
+                    gate = self.gate_min_weight + (1 - 2 * self.gate_min_weight) * gate
+                gate_acc = gate[:, 0:1]
+                gate_gyro = gate[:, 1:2]
+                entropy = -(gate * torch.log(gate + 1e-12)).sum(dim=1).mean()
+                self.last_gate_entropy = entropy
+                self.last_gate_stats = {
+                    "mean_gate_acc": float(gate_acc.detach().mean().cpu().item()),
+                    "mean_gate_gyro": float(gate_gyro.detach().mean().cpu().item()),
+                    "gate_entropy": float(entropy.detach().cpu().item()),
+                }
+                x_mm = torch.cat((gate_acc * x_acc, gate_gyro * x_gyro), dim=1)
         else:
             # 4. Average pooling
             x_acc = torch.mean(x_acc, axis=1)
@@ -620,7 +653,7 @@ class HARClassifier(nn.Module):
             x_mm = torch.cat((x_acc, x_gyro), dim=1)
 
         # 5. Projection
-        if self.en_att and self.att_name != "fuse_base":
+        if self.en_att and self.att_name not in ["fuse_base", "reliability_gate"]:
             x_acc = self.acc_proj(x_acc)
             x_gyro = self.gyro_proj(x_gyro)
             x_mm = torch.cat((x_acc, x_gyro), dim=1)

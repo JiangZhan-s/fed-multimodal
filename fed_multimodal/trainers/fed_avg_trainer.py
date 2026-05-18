@@ -62,6 +62,13 @@ class ClientFedAvg(object):
 
         # initialize eval
         self.eval = EvalMetric(self.multilabel)
+        self.gate_stats = None
+        gate_stat_sums = {
+            "mean_gate_acc": 0.0,
+            "mean_gate_gyro": 0.0,
+            "gate_entropy": 0.0,
+        }
+        gate_stat_samples = 0
         
         # optimizer
         if self.args.fed_alg in ['fed_avg', 'fed_opt', 'fed_rant_lite']:
@@ -111,9 +118,25 @@ class ClientFedAvg(object):
                     
                 # backward
                 loss = self.criterion(outputs, y)
+                total_loss = loss
+                if (
+                    self.args.modality == "multimodal"
+                    and getattr(self.args, "att", False)
+                    and getattr(self.args, "att_name", None) == "reliability_gate"
+                ):
+                    gate_stats = getattr(self.model, "last_gate_stats", None)
+                    if gate_stats is not None:
+                        batch_samples = int(y.shape[0])
+                        for key in gate_stat_sums:
+                            gate_stat_sums[key] += float(gate_stats[key]) * batch_samples
+                        gate_stat_samples += batch_samples
+
+                    gate_entropy = getattr(self.model, "last_gate_entropy", None)
+                    if gate_entropy is not None and getattr(self.args, "gate_entropy_reg", 0.0) > 0:
+                        total_loss = loss - self.args.gate_entropy_reg * gate_entropy
 
                 # backward
-                loss.backward()
+                total_loss.backward()
                 
                 # clip gradients
                 torch.nn.utils.clip_grad_norm_(
@@ -141,3 +164,12 @@ class ClientFedAvg(object):
             self.result = self.eval.classification_summary()
         else:
             self.result = self.eval.multilabel_summary()
+
+        if gate_stat_samples > 0:
+            self.gate_stats = {
+                key: value / gate_stat_samples
+                for key, value in gate_stat_sums.items()
+            }
+
+    def get_gate_stats(self):
+        return self.gate_stats

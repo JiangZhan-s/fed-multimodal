@@ -33,6 +33,10 @@ from fed_multimodal.trainers.per_client_eval_metrics import (
     build_per_client_eval_row,
     write_per_client_eval_rows,
 )
+from fed_multimodal.trainers.gate_weight_metrics import (
+    append_gate_weight_metrics,
+    build_gate_weight_row,
+)
 
 # Define logging console
 import logging
@@ -124,6 +128,13 @@ def parse_positive_float(value_arg):
     return value
 
 
+def parse_gate_min_weight(value_arg):
+    value = float(value_arg)
+    if value < 0 or value >= 0.5:
+        raise argparse.ArgumentTypeError("gate_min_weight must satisfy 0 <= value < 0.5.")
+    return value
+
+
 def validate_run_id(run_id):
     if run_id is None:
         return None
@@ -180,6 +191,18 @@ def validate_modality_args(args):
             raise ValueError(
                 "Missing-modality simulation is not supported for pure acc/gyro single-modality training."
             )
+
+
+def validate_gate_args(args):
+    if args.att_name == "reliability_gate":
+        if not args.att:
+            raise ValueError("--att_name reliability_gate requires --en_att.")
+        if args.modality != "multimodal":
+            raise ValueError("--att_name reliability_gate only supports acc_gyro multimodal training.")
+
+    if args.save_gate_weights:
+        if not (args.att and args.att_name == "reliability_gate"):
+            raise ValueError("--save_gate_weights can only be used with --en_att --att_name reliability_gate.")
 
 
 def parse_args():
@@ -430,6 +453,33 @@ def parse_args():
         action='store_true',
         help='save FedRANT-Lite aggregation weights to CSV',
     )
+
+    parser.add_argument(
+        '--gate_temperature',
+        type=parse_positive_float,
+        default=1.0,
+        help='reliability_gate softmax temperature',
+    )
+
+    parser.add_argument(
+        '--gate_entropy_reg',
+        type=parse_nonnegative_float,
+        default=0.0,
+        help='entropy regularization strength for reliability_gate',
+    )
+
+    parser.add_argument(
+        '--gate_min_weight',
+        type=parse_gate_min_weight,
+        default=0.0,
+        help='minimum per-modality reliability_gate weight; must be in [0, 0.5)',
+    )
+
+    parser.add_argument(
+        '--save_gate_weights',
+        action='store_true',
+        help='save reliability_gate client-level gate statistics to CSV',
+    )
     
     parser.add_argument(
         '--batch_size',
@@ -551,6 +601,7 @@ if __name__ == '__main__':
     args = parse_args()
     validate_modality_args(args)
     args.modality = normalize_modality(args.modality)
+    validate_gate_args(args)
     if args.rant_max_weight < args.rant_min_weight:
         raise ValueError("--rant_max_weight must be greater than or equal to --rant_min_weight.")
     if args.save_rant_weights and args.fed_alg != "fed_rant_lite":
@@ -643,7 +694,9 @@ if __name__ == '__main__':
                 gyro_input_dim=constants.feature_len_dict[args.gyro_feat],  # Gyro data input dim
                 en_att=args.att,                                            # Enable self attention or not
                 d_hid=args.hid_size,
-                att_name=args.att_name
+                att_name=args.att_name,
+                gate_temperature=args.gate_temperature,
+                gate_min_weight=args.gate_min_weight,
             )
         else:
             global_model = ConvRNNClassifier(
@@ -698,6 +751,9 @@ if __name__ == '__main__':
         if args.save_rant_weights:
             logging.info(f'Saving FedRANT-Lite aggregation weights to {rant_weights_path}')
             server.set_rant_weights_path(rant_weights_path)
+        gate_weights_path = save_json_path.joinpath("gate_weights.csv")
+        if args.save_gate_weights:
+            logging.info(f'Saving reliability gate weights to {gate_weights_path}')
         local_eval_split_path = save_json_path.joinpath(f"local_eval_split_fold{fold_idx}.json")
 
         if args.save_client_metrics:
@@ -715,6 +771,12 @@ if __name__ == '__main__':
         if args.save_rant_weights:
             prepare_metric_output_path(
                 rant_weights_path,
+                args.metrics_write_mode,
+                prepared_metric_paths,
+            )
+        if args.save_gate_weights:
+            prepare_metric_output_path(
+                gate_weights_path,
                 args.metrics_write_mode,
                 prepared_metric_paths,
             )
@@ -898,6 +960,27 @@ if __name__ == '__main__':
                         ),
                         write_mode=args.metrics_write_mode,
                     )
+                if args.save_gate_weights:
+                    gate_stats = None
+                    if hasattr(client, "get_gate_stats"):
+                        gate_stats = client.get_gate_stats()
+                    if gate_stats is None:
+                        logging.warning(f"No reliability gate stats available for client {client_id}; skipping gate log row.")
+                    else:
+                        append_gate_weight_metrics(
+                            gate_weights_path,
+                            build_gate_weight_row(
+                                args=args,
+                                fold_idx=fold_idx,
+                                epoch=epoch,
+                                client_id=client_id,
+                                num_samples=client.result.get("sample"),
+                                gate_stats=gate_stats,
+                                client_result=client.result,
+                                modality_setting=server.feature,
+                            ),
+                            write_mode=args.metrics_write_mode,
+                        )
                 del client
             
             # logging skip client
