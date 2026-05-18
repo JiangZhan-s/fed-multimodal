@@ -1,0 +1,7 @@
+method,fold,NTR,mean_multi_f1,worst20_multi_f1,global_f1
+FedAvg fuse_base,fold1,0.980952,5.44151,1.879602,19.217786
+FedAvg fuse_base,fold2,1.0,5.223903,1.956166,12.848941
+FedAvg no-att,fold1,0.085714,27.439009,14.58893,36.609368
+FedAvg no-att,fold2,0.980952,13.68092,5.550552,21.460767
+FedRANT no-att,fold1,0.047619,32.452982,16.501867,36.637316
+FedRANT no-att,fold2,0.990476,13.336897,5.219807,14.900063

@@ -1,0 +1,3 @@
+method,gate_acc_mean,gate_gyro_mean,gate_entropy_mean
+FedAvg gate,0.565049,0.434951,0.684605
+FedRANT gate,0.564303,0.435697,0.684794

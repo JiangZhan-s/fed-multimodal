@@ -1,0 +1,13 @@
+method,NTR,negative_clients,mean_multi_f1,worst20_multi_f1,median_multi_f1,global_f1
+"FedAvg
+fuse_base",0.980952,103,5.44151,1.879602,5.882353,19.217786
+"FedAvg
+no-att",0.085714,9,27.439009,14.58893,26.111111,36.609368
+"FedRANT loss
+fuse_base",0.87619,92,7.610062,2.350736,6.666667,19.581561
+"FedRANT loss
+no-att",0.047619,5,32.452982,16.501867,33.333333,36.637316
+"FedAvg
+reliability_gate",0.990476,104,5.322727,1.809645,5.555556,11.880765
+"FedRANT loss
+reliability_gate",0.990476,104,5.322727,1.809645,5.555556,11.987033
